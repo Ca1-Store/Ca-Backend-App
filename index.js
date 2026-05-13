@@ -29,9 +29,9 @@ db.query(`
 `).catch(err => console.error("DB init error:", err));
 
 /* ============================================================
-   helper: جيب النسخة الحالية من Discord مباشرة
+   helper: جيب كل النسخ اللي عند المستخدم من Discord
 ============================================================ */
-async function getPlanFromDiscord(discordId) {
+async function getPlansFromDiscord(discordId) {
     const memberRes = await fetch(
         `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}`,
         { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } }
@@ -40,14 +40,15 @@ async function getPlanFromDiscord(discordId) {
 
     if (!member.roles) return null;
 
-    const planPriority = ["CA-3", "CA-2", "CA-1"];
-
-    for (const p of planPriority) {
-        const roleId = Object.keys(ROLE_PLAN_MAP).find(k => ROLE_PLAN_MAP[k] === p);
-        if (roleId && member.roles.includes(roleId)) return p;
+    // رجّع كل النسخ اللي عنده
+    const plans = [];
+    for (const roleId of member.roles) {
+        if (ROLE_PLAN_MAP[roleId]) {
+            plans.push(ROLE_PLAN_MAP[roleId]);
+        }
     }
 
-    return null;
+    return plans.length > 0 ? plans : null;
 }
 
 /* ============================================================
@@ -109,20 +110,20 @@ app.post("/auth/callback", async (req, res) => {
             );
         }
 
-        // جيب النسخة من Discord
-        const plan = await getPlanFromDiscord(discordId);
+        // جيب كل النسخ من Discord
+        const plans = await getPlansFromDiscord(discordId);
 
-        if (!plan) return res.json({ success: false, message: "ما عندك نسخة فعّالة في السيرفر" });
+        if (!plans) return res.json({ success: false, message: "ما عندك نسخة فعّالة في السيرفر" });
 
         const token = jwt.sign(
-            { discordId, plan, hwid },
+            { discordId, hwid },
             JWT_SECRET,
             { expiresIn: "30d" }
         );
 
         await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
 
-        return res.json({ success: true, token, plan, username: user.username });
+        return res.json({ success: true, token, plans, username: user.username });
 
     } catch (err) {
         console.error("❌ Callback error:", err);
@@ -143,14 +144,14 @@ app.post("/auth/verify", async (req, res) => {
             return res.json({ success: false, message: "جهاز غير مطابق" });
         }
 
-        // تحقق من الرول الحالي في Discord - فوري وليس من الـ token
-        const plan = await getPlanFromDiscord(decoded.discordId);
+        // جيب كل النسخ الحالية من Discord مباشرة
+        const plans = await getPlansFromDiscord(decoded.discordId);
 
-        if (!plan) {
+        if (!plans) {
             return res.json({ success: false, message: "انتهت صلاحية نسختك أو تم إلغاؤها" });
         }
 
-        return res.json({ success: true, plan, discordId: decoded.discordId });
+        return res.json({ success: true, plans, discordId: decoded.discordId });
 
     } catch {
         return res.json({ success: false, message: "Token منتهي أو غير صالح" });
