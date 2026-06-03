@@ -124,7 +124,7 @@ app.post("/auth/callback", async (req, res) => {
 
         await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
 
-        return res.json({ success: true, token, plans, username: user.username });
+        return res.json({ success: true, token, plans, username: user.username, discordId: discordId });
 
     } catch (err) {
         console.error("❌ Callback error:", err);
