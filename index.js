@@ -158,5 +158,89 @@ app.post("/auth/verify", async (req, res) => {
         return res.json({ success: false, message: "Token منتهي أو غير صالح" });
     }
 });
+/* ============================================================
+   API: جلب بيانات الـ Packs
+============================================================ */
+app.get("/api/packs", async (req, res) => {
+    const packs = [
+        {
+            id: "CA1",
+            plan: "CA-1",
+            name: "CA - Pack 1",
+            level: 1,
+            images: ["../assets/Ca--Pack.png", "../assets/Ca-1.png", "../assets/Ca-1v1.png"],
+            url: "http://213.199.63.97/CA-1%20PACK.zip"
+        },
+        {
+            id: "CA2",
+            plan: "CA-2",
+            name: "CA - Pack 2",
+            level: 2,
+            images: ["../assets/Ca-Pack.png", "../assets/Ca-2v2.png", "../assets/Ca_Store.png"],
+            url: "http://213.199.63.97/CA-2%20PACK.zip"
+        },
+        {
+            id: "CA3",
+            plan: "CA-3",
+            name: "CA - Pack 3",
+            level: 3,
+            images: ["../assets/ca333.png", "../assets/ca3.png", "../assets/ca33.png"],
+            url: "http://213.199.63.97/CA-3%20PACK.zip"
+        },
+        {
+            id: "CA4",
+            plan: "CA-4",
+            name: "CA - Pack 4",
+            level: 4,
+            images: ["../assets/ca444.png", "../assets/ca4.png", "../assets/ca44.png"],
+            url: "http://213.199.63.97/CA-4%20PACK.zip"
+        }
+    ];
+    res.json({ success: true, packs });
+});
 
+/* ============================================================
+   API: جلب بيانات المودات
+============================================================ */
+app.get("/api/mods", async (req, res) => {
+    const sections = [
+        {
+            title: "Roads",
+            subtitle: "تحتاج أي نسخة",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17L9 3l6 14"/><path d="M6 11h6"/></svg>`,
+            requiredPlans: ["CA-1", "CA-2", "CA-3", "CA-4"],
+            mods: [
+                { name: "European Roads", file: "European_Roads.rpf", img: "../assets/Europe.png", url: "http://213.199.63.97/European_Roads.rpf" },
+                { name: "German Roads", file: "German_Roads.rpf", img: "../assets/German_Roads.png", url: "http://213.199.63.97/German_Roads.rpf" },
+                { name: "NVE Roads", file: "Ls_Roads_Pack.rpf", img: "../assets/nve.png", url: "http://213.199.63.97/Ls_Roads_Pack.rpf" },
+                { name: "Liberty Roads", file: "Liberty_Roads.rpf", img: "../assets/Liberty.png", url: "http://213.199.63.97/Liberty_Roads.rpf" }
+            ]
+        },
+        {
+            title: "Vegetation",
+            subtitle: "تحتاج النسخة الثانية أو الثالثة",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 7 4s0 5 5 8"/><path d="M12 12c0-5 5-8 5-8s0 5-5 8"/></svg>`,
+            requiredPlans: ["CA-2", "CA-3", "CA-4"],
+            mods: [
+                { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://213.199.63.97/CA_Vegetation.rpf" },
+                { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://213.199.63.97/CA_Extra_Vegetation.rpf" },
+                { name: "Sandy Shores Vegetation", file: "CA_Sandy_Shores_Vegetation.rpf", img: "../assets/Sandy.png", url: "http://213.199.63.97/CA_Sandy_Shores_Vegetation.rpf" }
+            ]
+        },
+        {
+            title: "Addons",
+            subtitle: "تحتاج النسخة الثانية أو الثالثة",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><rect x="10" y="10" width="5" height="5"/></svg>`,
+            requiredPlans: ["CA-2", "CA-3", "CA-4"],
+            mods: [
+                { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://213.199.63.97/CA_Halloween_Pack.rpf" },
+                { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://213.199.63.97/CA_Christmas_Pack.rpf" },
+                { name: "Weather FOGGY", file: "CA_Foggy.rpf", img: "../assets/Foggy_Deep Weather.jpg", url: "http://213.199.63.97/CA_Foggy.rpf" },
+                { name: "Volumetric Clouds", file: "CA_Volumetric_Clouds.rpf", img: "../assets/vol.png", url: "http://213.199.63.97/CA_Volumetric_Clouds.rpf" },
+                { name: "Snowy Mount Chiliad", file: "CA_Snowy_Mount_Chilliad.rpf", img: "../assets/Mount.png", url: "http://213.199.63.97/CA_Snowy_Mount_Chilliad.rpf" }
+            ]
+        }
+    ];
+    res.json({ success: true, sections });
+});
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
