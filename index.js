@@ -159,7 +159,7 @@ app.post("/auth/verify", async (req, res) => {
     }
 });
 /* ============================================================
-   API: جلب بيانات الـ Packs
+   API: جلب بيانات الـ Packs مع نظام الـ Versions
 ============================================================ */
 app.get("/api/packs", async (req, res) => {
     const packs = [
@@ -169,7 +169,18 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 1",
             level: 1,
             images: ["../assets/Ca--Pack.png", "../assets/Ca-1.png", "../assets/Ca-1v1.png"],
-            url: "http://213.199.63.97/CA-1%20PACK.zip"
+            url: "http://213.199.63.97/CA-1%20PACK.zip",
+            versions: [
+                {
+                    version: "1.0",
+                    date: "2026-03-18",
+                    latest: true,
+                    size: "1.80 GB",
+                    features: ["الإصدار الأولي", "جرافيكس أساسي"],
+                    changelog: "الإصدار الأولي من باك الجرافيكس",
+                    url: "http://213.199.63.97/CA-1%20PACK.zip"
+                }
+            ]
         },
         {
             id: "CA2",
@@ -177,7 +188,18 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 2",
             level: 2,
             images: ["../assets/Ca-Pack.png", "../assets/Ca-2v2.png", "../assets/Ca_Store.png"],
-            url: "http://213.199.63.97/CA-2%20PACK.zip"
+            url: "http://213.199.63.97/CA-2%20PACK.zip",
+            versions: [
+                {
+                    version: "1.0",
+                    date: "2026-05-20",
+                    latest: true,
+                    size: "276 MB",
+                    features: ["جرافيكس محسّن", "أداء أفضل"],
+                    changelog: "الإصدار الأولي مع تحسينات على الجرافيكس",
+                    url: "http://213.199.63.97/CA-2%20PACK.zip"
+                }
+            ]
         },
         {
             id: "CA3",
@@ -185,7 +207,18 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 3",
             level: 3,
             images: ["../assets/ca333.png", "../assets/ca3.png", "../assets/ca33.png"],
-            url: "http://213.199.63.97/CA-3%20PACK.zip"
+            url: "http://213.199.63.97/CA-3%20PACK.zip",
+            versions: [
+                {
+                    version: "1.0",
+                    date: "2026-05-25",
+                    latest: true,
+                    size: "733 MB",
+                    features: ["جرافيكس عالي الجودة", "إضاءة محسّنة"],
+                    changelog: "الإصدار الأولي مع جرافيكس عالي الجودة",
+                    url: "http://213.199.63.97/CA-3%20PACK.zip"
+                }
+            ]
         },
         {
             id: "CA4",
@@ -193,12 +226,31 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 4",
             level: 4,
             images: ["../assets/ca444.png", "../assets/ca4.png", "../assets/ca44.png"],
-            url: "http://213.199.63.97/CA-4%20PACK.zip"
+            url: "http://213.199.63.97/CA-4%20PACK.zip",
+            versions: [
+                {
+                    version: "1.0.1",
+                    date: "2026-06-6",
+                    latest: true,
+                    size: "700 MB",
+                    features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
+                    changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
+                    url: "http://213.199.63.97/CA-4-PACK-v1.0.1.zip"
+                },
+                {
+                    version: "1.0",
+                    date: "2026-05-28",
+                    latest: false,
+                    size: "900 MB",
+                    features: ["الإصدار الأولي", "جرافيكس فائق"],
+                    changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
+                    url: "http://213.199.63.97/CA-4%20PACK.zip"
+                }
+            ]
         }
     ];
     res.json({ success: true, packs });
 });
-
 /* ============================================================
    API: جلب بيانات المودات
 ============================================================ */
