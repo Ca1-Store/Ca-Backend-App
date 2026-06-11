@@ -10,12 +10,25 @@ const app = express();
 app.use(express.json());
 
 // CORS Configuration - السماح للموقع بالاتصال
+const allowedOrigins = [
+    "https://www.ca-store.store",
+    "http://127.0.0.1:5501",
+    "http://localhost:5500"
+];
+
 app.use(cors({
-    origin: process.env.WEBSITE_URL || "*",
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error("Not allowed by CORS"));
+        }
+    },
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"]
 }));
+
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -23,6 +36,7 @@ const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "your-webhook-secret";
+const WEBSITE_URL = process.env.WEBSITE_URL || "https://www.ca-store.store";
 
 const ROLE_PLAN_MAP = {
     "1479829127715618866": "CA-1",
@@ -79,6 +93,9 @@ db.query(`
     )
 `).catch(err => console.error("Sessions table error:", err));
 
+/* ============================================================
+   helper: جيب كل النسخ اللي عند المستخدم من Discord
+============================================================ */
 async function getPlansFromDiscord(discordId) {
     const memberRes = await fetch(
         `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}`,
@@ -98,6 +115,9 @@ async function getPlansFromDiscord(discordId) {
     return plans.length > 0 ? plans : null;
 }
 
+/* ============================================================
+   helper: منح رول لمستخدم في Discord
+============================================================ */
 async function grantRoleToUser(discordId, plan) {
     const roleId = PLAN_ROLE_MAP[plan];
     if (!roleId) {
@@ -140,8 +160,7 @@ app.get("/auth/url", (req, res) => {
    خطوة 1.5: الموقع يطلب رابط OAuth
 ============================================================ */
 app.get("/auth/web/url", (req, res) => {
-    const websiteUrl = process.env.WEBSITE_URL || "http://localhost:3000";
-    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(websiteUrl + "/auth/callback")}&response_type=code&scope=identify%20guilds.members.read`;
+    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEBSITE_URL + "/auth/callback")}&response_type=code&scope=identify%20guilds.members.read`;
     res.json({ url });
 });
 
@@ -224,8 +243,6 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
     if (!code) return res.json({ success: false, message: "بيانات ناقصة" });
 
     try {
-        const websiteUrl = process.env.WEBSITE_URL || "http://localhost:3000";
-        
         const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -234,7 +251,7 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
                 client_secret: CLIENT_SECRET,
                 grant_type: "authorization_code",
                 code,
-                redirect_uri: websiteUrl + "/auth/callback"
+                redirect_uri: WEBSITE_URL + "/auth/callback"
             })
         });
 
