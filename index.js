@@ -160,7 +160,7 @@ app.get("/auth/url", (req, res) => {
    خطوة 1.5: الموقع يطلب رابط OAuth
 ============================================================ */
 app.get("/auth/web/url", (req, res) => {
-    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEBSITE_URL + "/auth/callback")}&response_type=code&scope=identify%20guilds.members.read`;
+    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEBSITE_URL + "/auth-callback.html")}&response_type=code&scope=identify%20guilds.members.read`;
     res.json({ url });
 });
 
@@ -251,7 +251,7 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
                 client_secret: CLIENT_SECRET,
                 grant_type: "authorization_code",
                 code,
-                redirect_uri: WEBSITE_URL + "/auth/callback"
+                redirect_uri: WEBSITE_URL + "/auth-callback.html"
             })
         });
 
