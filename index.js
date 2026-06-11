@@ -9,7 +9,7 @@ const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fet
 const app = express();
 app.use(express.json());
 
-// CORS Configuration - السماح للموقع بالاتصال
+// CORS Configuration
 const allowedOrigins = [
     "https://www.ca-store.store",
     "http://127.0.0.1:5501",
@@ -78,8 +78,7 @@ db.query(`
     CREATE TABLE IF NOT EXISTS users (
         discord_id TEXT PRIMARY KEY,
         hwid TEXT,
-        last_login TIMESTAMP,
-        ip_address TEXT
+        last_login TIMESTAMP
     )
 `).catch(err => console.error("DB init error:", err));
 
@@ -88,8 +87,7 @@ db.query(`
         session_id TEXT PRIMARY KEY,
         discord_id TEXT,
         created_at TIMESTAMP DEFAULT NOW(),
-        expires_at TIMESTAMP,
-        ip_address TEXT
+        expires_at TIMESTAMP
     )
 `).catch(err => console.error("Sessions table error:", err));
 
@@ -197,7 +195,6 @@ app.post("/auth/callback", authLimiter, async (req, res) => {
         });
         const user = await userRes.json();
         const discordId = user.id;
-        const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
@@ -208,11 +205,11 @@ app.post("/auth/callback", authLimiter, async (req, res) => {
                     message: "هذا الحساب مسجّل على جهاز مختلف. تواصل مع الدعم."
                 });
             }
-            await db.query("UPDATE users SET ip_address=$1, last_login=NOW() WHERE discord_id=$2", [ip, discordId]);
+            await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
         } else {
             await db.query(
-                "INSERT INTO users (discord_id, hwid, last_login, ip_address) VALUES ($1,$2,NOW(),$3)",
-                [discordId, hwid, ip]
+                "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,$2,NOW())",
+                [discordId, hwid]
             );
         }
 
@@ -267,17 +264,16 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         });
         const user = await userRes.json();
         const discordId = user.id;
-        const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
         if (existing.rows.length === 0) {
             await db.query(
-                "INSERT INTO users (discord_id, hwid, last_login, ip_address) VALUES ($1,NULL,NOW(),$2)",
-                [discordId, ip]
+                "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,NULL,NOW())",
+                [discordId]
             );
         } else {
-            await db.query("UPDATE users SET ip_address=$1, last_login=NOW() WHERE discord_id=$2", [ip, discordId]);
+            await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
         }
 
         const plans = await getPlansFromDiscord(discordId);
@@ -286,8 +282,8 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
         await db.query(
-            "INSERT INTO web_sessions (session_id, discord_id, expires_at, ip_address) VALUES ($1,$2,$3,$4)",
-            [sessionId, discordId, expiresAt, ip]
+            "INSERT INTO web_sessions (session_id, discord_id, expires_at) VALUES ($1,$2,$3)",
+            [sessionId, discordId, expiresAt]
         );
 
         const token = jwt.sign(
