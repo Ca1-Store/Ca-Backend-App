@@ -1,19 +1,16 @@
 {
+  "name": "ca-backend",
+  "version": "1.0.0",
+  "description": "CA Store Backend",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "name": "ca-graphics-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
+    "cors": "^2.8.6",
     "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "node-fetch": "^3.3.2",
-    "pg": "^8.20.0"
+    "express-rate-limit": "^7.1.5",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3"
   }
 }
