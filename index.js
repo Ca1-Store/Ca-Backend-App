@@ -1,11 +1,21 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
+const rateLimit = require("express-rate-limit");
+const cors = require("cors");
 
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 app.use(express.json());
+
+// CORS Configuration - السماح للموقع بالاتصال
+app.use(cors({
+    origin: process.env.WEBSITE_URL || "*",
+    credentials: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -13,6 +23,7 @@ const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "your-webhook-secret";
 
 const ROLE_PLAN_MAP = {
     "1479829127715618866": "CA-1",
@@ -21,17 +32,54 @@ const ROLE_PLAN_MAP = {
     "1509080955858456687": "CA-4",
 };
 
+const PLAN_ROLE_MAP = {
+    "CA-1": "1479829127715618866",
+    "CA-2": "1479829984385171557",
+    "CA-3": "1502945235817467974",
+    "CA-4": "1509080955858456687",
+};
+
+// Rate Limiting
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: { success: false, message: "محاولات كثيرة، حاول لاحقاً" },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const webhookLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 5,
+    message: { success: false, message: "Too many webhook requests" }
+});
+
+// IP Logging Middleware
+app.use((req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} - IP: ${ip}`);
+    next();
+});
+
 db.query(`
     CREATE TABLE IF NOT EXISTS users (
         discord_id TEXT PRIMARY KEY,
         hwid TEXT,
-        last_login TIMESTAMP
+        last_login TIMESTAMP,
+        ip_address TEXT
     )
 `).catch(err => console.error("DB init error:", err));
 
-/* ============================================================
-   helper: جيب كل النسخ اللي عند المستخدم من Discord
-============================================================ */
+db.query(`
+    CREATE TABLE IF NOT EXISTS web_sessions (
+        session_id TEXT PRIMARY KEY,
+        discord_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        expires_at TIMESTAMP,
+        ip_address TEXT
+    )
+`).catch(err => console.error("Sessions table error:", err));
+
 async function getPlansFromDiscord(discordId) {
     const memberRes = await fetch(
         `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}`,
@@ -41,7 +89,6 @@ async function getPlansFromDiscord(discordId) {
 
     if (!member.roles) return null;
 
-    // رجّع كل النسخ اللي عنده
     const plans = [];
     for (const roleId of member.roles) {
         if (ROLE_PLAN_MAP[roleId]) {
@@ -50,6 +97,36 @@ async function getPlansFromDiscord(discordId) {
     }
 
     return plans.length > 0 ? plans : null;
+}
+
+async function grantRoleToUser(discordId, plan) {
+    const roleId = PLAN_ROLE_MAP[plan];
+    if (!roleId) {
+        console.error(`❌ No role ID found for plan: ${plan}`);
+        return false;
+    }
+
+    try {
+        const res = await fetch(
+            `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}/roles/${roleId}`,
+            {
+                method: "PUT",
+                headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` }
+            }
+        );
+
+        if (res.ok) {
+            console.log(`✅ Granted role ${plan} to user ${discordId}`);
+            return true;
+        } else {
+            const error = await res.text();
+            console.error(`❌ Failed to grant role: ${error}`);
+            return false;
+        }
+    } catch (err) {
+        console.error(`❌ Error granting role:`, err);
+        return false;
+    }
 }
 
 /* ============================================================
@@ -61,9 +138,18 @@ app.get("/auth/url", (req, res) => {
 });
 
 /* ============================================================
-   خطوة 2: استقبال الكود من Discord وتبديله بـ token
+   خطوة 1.5: الموقع يطلب رابط OAuth
 ============================================================ */
-app.post("/auth/callback", async (req, res) => {
+app.get("/auth/web/url", (req, res) => {
+    const websiteUrl = process.env.WEBSITE_URL || "http://localhost:3000";
+    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(websiteUrl + "/auth/callback")}&response_type=code&scope=identify%20guilds.members.read`;
+    res.json({ url });
+});
+
+/* ============================================================
+   خطوة 2: استقبال الكود من Discord وتبديله بـ token (للبرنامج)
+============================================================ */
+app.post("/auth/callback", authLimiter, async (req, res) => {
     const { code, hwid } = req.body;
 
     if (!code || !hwid) return res.json({ success: false, message: "بيانات ناقصة" });
@@ -93,8 +179,8 @@ app.post("/auth/callback", async (req, res) => {
         });
         const user = await userRes.json();
         const discordId = user.id;
+        const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
 
-        // التحقق من HWID
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
         if (existing.rows.length > 0) {
@@ -104,14 +190,14 @@ app.post("/auth/callback", async (req, res) => {
                     message: "هذا الحساب مسجّل على جهاز مختلف. تواصل مع الدعم."
                 });
             }
+            await db.query("UPDATE users SET ip_address=$1, last_login=NOW() WHERE discord_id=$2", [ip, discordId]);
         } else {
             await db.query(
-                "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,$2,NOW())",
-                [discordId, hwid]
+                "INSERT INTO users (discord_id, hwid, last_login, ip_address) VALUES ($1,$2,NOW(),$3)",
+                [discordId, hwid, ip]
             );
         }
 
-        // جيب كل النسخ من Discord
         const plans = await getPlansFromDiscord(discordId);
 
         if (!plans) return res.json({ success: false, message: "ما عندك نسخة فعّالة في السيرفر" });
@@ -122,8 +208,6 @@ app.post("/auth/callback", async (req, res) => {
             { expiresIn: "30d" }
         );
 
-        await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
-
         return res.json({ success: true, token, plans, username: user.username, discordId: discordId });
 
     } catch (err) {
@@ -133,7 +217,86 @@ app.post("/auth/callback", async (req, res) => {
 });
 
 /* ============================================================
-   خطوة 3: التحقق عند كل فتح - يتحقق من Discord مباشرة
+   خطوة 2.5: استقبال الكود من Discord للموقع (بدون HWID)
+============================================================ */
+app.post("/auth/web/callback", authLimiter, async (req, res) => {
+    const { code } = req.body;
+
+    if (!code) return res.json({ success: false, message: "بيانات ناقصة" });
+
+    try {
+        const websiteUrl = process.env.WEBSITE_URL || "http://localhost:3000";
+        
+        const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                client_id: CLIENT_ID,
+                client_secret: CLIENT_SECRET,
+                grant_type: "authorization_code",
+                code,
+                redirect_uri: websiteUrl + "/auth/callback"
+            })
+        });
+
+        const tokenData = await tokenRes.json();
+
+        if (!tokenData.access_token) {
+            console.error("❌ OAuth failed:", tokenData);
+            return res.json({ success: false, message: "فشل OAuth" });
+        }
+
+        const userRes = await fetch("https://discord.com/api/users/@me", {
+            headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const user = await userRes.json();
+        const discordId = user.id;
+        const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress;
+
+        const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
+
+        if (existing.rows.length === 0) {
+            await db.query(
+                "INSERT INTO users (discord_id, hwid, last_login, ip_address) VALUES ($1,NULL,NOW(),$2)",
+                [discordId, ip]
+            );
+        } else {
+            await db.query("UPDATE users SET ip_address=$1, last_login=NOW() WHERE discord_id=$2", [ip, discordId]);
+        }
+
+        const plans = await getPlansFromDiscord(discordId);
+
+        const sessionId = require('crypto').randomBytes(32).toString('hex');
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await db.query(
+            "INSERT INTO web_sessions (session_id, discord_id, expires_at, ip_address) VALUES ($1,$2,$3,$4)",
+            [sessionId, discordId, expiresAt, ip]
+        );
+
+        const token = jwt.sign(
+            { discordId, sessionId },
+            JWT_SECRET,
+            { expiresIn: "30d" }
+        );
+
+        return res.json({ 
+            success: true, 
+            token, 
+            plans, 
+            username: user.username, 
+            discordId: discordId,
+            avatar: user.avatar ? `https://cdn.discordapp.com/avatars/${discordId}/${user.avatar}.png` : null
+        });
+
+    } catch (err) {
+        console.error("❌ Web callback error:", err);
+        return res.json({ success: false, message: "خطأ في السيرفر" });
+    }
+});
+
+/* ============================================================
+   خطوة 3: التحقق عند كل فتح - يتحقق من Discord مباشرة (للبرنامج)
 ============================================================ */
 app.post("/auth/verify", async (req, res) => {
     const { token, hwid } = req.body;
@@ -145,7 +308,6 @@ app.post("/auth/verify", async (req, res) => {
             return res.json({ success: false, message: "جهاز غير مطابق" });
         }
 
-        // جيب كل النسخ الحالية من Discord مباشرة
         const plans = await getPlansFromDiscord(decoded.discordId);
 
         if (!plans) {
@@ -158,6 +320,64 @@ app.post("/auth/verify", async (req, res) => {
         return res.json({ success: false, message: "Token منتهي أو غير صالح" });
     }
 });
+
+/* ============================================================
+   خطوة 3.5: التحقق للموقع
+============================================================ */
+app.post("/auth/web/verify", async (req, res) => {
+    const { token } = req.body;
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+
+        const session = await db.query(
+            "SELECT * FROM web_sessions WHERE session_id=$1 AND expires_at > NOW()",
+            [decoded.sessionId]
+        );
+
+        if (session.rows.length === 0) {
+            return res.json({ success: false, message: "Session منتهية" });
+        }
+
+        const plans = await getPlansFromDiscord(decoded.discordId);
+
+        return res.json({ 
+            success: true, 
+            plans, 
+            discordId: decoded.discordId,
+            username: decoded.username
+        });
+
+    } catch (err) {
+        console.error("❌ Web verify error:", err);
+        return res.json({ success: false, message: "Token منتهي أو غير صالح" });
+    }
+});
+
+/* ============================================================
+   Webhook: منح الرول عند الدفع الناجح (PayPal)
+============================================================ */
+app.post("/webhook/payment", webhookLimiter, async (req, res) => {
+    const { secret, discordId, plan } = req.body;
+
+    if (secret !== WEBHOOK_SECRET) {
+        console.error("❌ Invalid webhook secret");
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    if (!discordId || !plan) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    const success = await grantRoleToUser(discordId, plan);
+
+    if (success) {
+        return res.json({ success: true, message: "تم منح الرول بنجاح" });
+    } else {
+        return res.json({ success: false, message: "فشل منح الرول" });
+    }
+});
+
 /* ============================================================
    API: جلب بيانات الـ Packs مع نظام الـ Versions
 ============================================================ */
@@ -251,6 +471,7 @@ app.get("/api/packs", async (req, res) => {
     ];
     res.json({ success: true, packs });
 });
+
 /* ============================================================
    API: جلب بيانات المودات
 ============================================================ */
@@ -295,4 +516,5 @@ app.get("/api/mods", async (req, res) => {
     ];
     res.json({ success: true, sections });
 });
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
