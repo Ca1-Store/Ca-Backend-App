@@ -37,6 +37,7 @@ const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID || "";
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const WEBSITE_URL = process.env.WEBSITE_URL || "https://www.ca-store.store";
 
 const ROLE_PLAN_MAP = {
@@ -156,22 +157,40 @@ function verifyPaypalWebhook(headers, body) {
     const actualSig = headers['paypal-transmission-sig'];
     const auth_algo = headers['paypal-auth-algo'];
 
-    if (!transmissionId || !timestamp || !actualSig || !auth_algo) {
-        console.error("❌ Missing PayPal webhook headers");
-        return false;
-    }
+    // Check for PayPal webhook headers
+    if (transmissionId || timestamp || actualSig || auth_algo) {
+        // This is a real PayPal webhook
+        if (!transmissionId || !timestamp || !actualSig || !auth_algo) {
+            console.error("❌ Missing PayPal webhook headers");
+            return false;
+        }
 
-    // For testing, you can skip verification by checking a flag
-    if (process.env.SKIP_WEBHOOK_VERIFICATION === "true") {
-        console.log("⚠️ Webhook verification skipped (testing mode)");
+        // For testing, you can skip verification by checking a flag
+        if (process.env.SKIP_WEBHOOK_VERIFICATION === "true") {
+            console.log("⚠️ Webhook verification skipped (testing mode)");
+            return true;
+        }
+
+        // In production, implement proper PayPal webhook signature verification
+        // This requires calling PayPal API to verify the signature
+        // For now, we'll use a simple check
+        console.log("✅ Webhook signature verified (simplified)");
         return true;
     }
 
-    // In production, implement proper PayPal webhook signature verification
-    // This requires calling PayPal API to verify the signature
-    // For now, we'll use a simple check
-    console.log("✅ Webhook signature verified (simplified)");
-    return true;
+    // Check for manual test with WEBHOOK_SECRET
+    const providedSecret = headers['x-webhook-secret'] || body.secret;
+    if (providedSecret) {
+        if (providedSecret !== WEBHOOK_SECRET) {
+            console.error("❌ Invalid webhook secret");
+            return false;
+        }
+        console.log("✅ Webhook secret verified");
+        return true;
+    }
+
+    console.error("❌ No valid webhook authentication found");
+    return false;
 }
 
 /* ============================================================
