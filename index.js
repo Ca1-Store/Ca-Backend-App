@@ -16,7 +16,8 @@ const allowedOrigins = [
     "http://127.0.0.1:5501",
     "http://localhost:5500",
     "https://admin-panel-orcin-zeta.vercel.app",
-    "https://admin-panel-puce-five.vercel.app"
+    "https://admin-panel-puce-five.vercel.app",
+    "https://admin-panel-henna-mu.vercel.app"
 ];
 app.use(cors({
     origin: function (origin, callback) {
