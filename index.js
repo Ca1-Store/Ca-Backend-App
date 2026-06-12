@@ -15,7 +15,7 @@ const allowedOrigins = [
     "https://www.ca-store.store",
     "http://127.0.0.1:5501",
     "http://localhost:5500",
-    "https://dashboard-five-sooty-21.vercel.app/"
+    "https://admin-panel-puce-five.vercel.app/"
 ];
 app.use(cors({
     origin: function (origin, callback) {
