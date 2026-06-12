@@ -262,7 +262,7 @@ async function verifyPaypalWebhook(headers, body) {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
-                    "Authorization": `Basic ${Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString('base64')}`
+                    "Authorization": `Basic ${Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString('base64')}` 
                 },
                 body: JSON.stringify(verifyBody)
             });
@@ -356,13 +356,14 @@ app.post("/auth/callback", authLimiter, async (req, res) => {
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
         if (existing.rows.length > 0) {
-            if (existing.rows[0].hwid !== hwid) {
+            // Allow HWID update if it's NULL (user registered from web first)
+            if (existing.rows[0].hwid !== null && existing.rows[0].hwid !== hwid) {
                 return res.json({
                     success: false,
                     message: "هذا الحساب مسجّل على جهاز مختلف. تواصل مع الدعم."
                 });
             }
-            await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
+            await db.query("UPDATE users SET hwid=$1, last_login=NOW() WHERE discord_id=$2", [hwid, discordId]);
         } else {
             await db.query(
                 "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,$2,NOW())",
