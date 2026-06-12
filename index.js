@@ -27,7 +27,7 @@ app.use(cors({
     },
     credentials: true,
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token"]
+    allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "x-webhook-secret"]
 }));
 
 const db = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -149,9 +149,9 @@ async function grantRoleToUser(discordId, plan) {
 }
 
 /* ============================================================
-   helper: التحقق من PayPal Webhook Signature
+   helper: التحقق من PayPal Webhook Signature (محسّن)
 ============================================================ */
-function verifyPaypalWebhook(headers, body) {
+async function verifyPaypalWebhook(headers, body) {
     const transmissionId = headers['paypal-transmission-id'];
     const timestamp = headers['paypal-cert-url'];
     const actualSig = headers['paypal-transmission-sig'];
@@ -171,16 +171,52 @@ function verifyPaypalWebhook(headers, body) {
             return true;
         }
 
-        // In production, implement proper PayPal webhook signature verification
-        // This requires calling PayPal API to verify the signature
-        // For now, we'll use a simple check
-        console.log("✅ Webhook signature verified (simplified)");
-        return true;
+        // Verify PayPal webhook signature using PayPal API
+        try {
+            const verifyUrl = `https://api-m.paypal.com/v1/notifications/verify-webhook-signature`;
+            
+            const verifyBody = {
+                auth_algo: auth_algo,
+                cert_url: timestamp,
+                transmission_id: transmissionId,
+                transmission_sig: actualSig,
+                transmission_time: headers['paypal-transmission-time'],
+                webhook_id: PAYPAL_WEBHOOK_ID,
+                webhook_event: body
+            };
+
+            const verifyRes = await fetch(verifyUrl, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Basic ${Buffer.from(CLIENT_ID + ":" + CLIENT_SECRET).toString('base64')}`
+                },
+                body: JSON.stringify(verifyBody)
+            });
+
+            const verifyData = await verifyRes.json();
+
+            if (verifyData.verification_status === "SUCCESS") {
+                console.log("✅ PayPal webhook signature verified successfully");
+                return true;
+            } else {
+                console.error("❌ PayPal webhook signature verification failed:", verifyData);
+                return false;
+            }
+        } catch (err) {
+            console.error("❌ Error verifying PayPal webhook signature:", err);
+            return false;
+        }
     }
 
-    // Check for manual test with WEBHOOK_SECRET
-    const providedSecret = headers['x-webhook-secret'] || body.secret;
+    // Check for manual test with WEBHOOK_SECRET (from body)
+    const providedSecret = body.secret;
     if (providedSecret) {
+        if (!WEBHOOK_SECRET) {
+            console.error("❌ WEBHOOK_SECRET not configured");
+            return false;
+        }
+        
         if (providedSecret !== WEBHOOK_SECRET) {
             console.error("❌ Invalid webhook secret");
             return false;
@@ -205,7 +241,8 @@ app.get("/auth/url", (req, res) => {
    خطوة 1.5: الموقع يطلب رابط OAuth
 ============================================================ */
 app.get("/auth/web/url", (req, res) => {
-    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(WEBSITE_URL + "/auth-callback.html")}&response_type=code&scope=identify%20guilds.members.read`;
+    const redirectUri = req.query.redirect_uri || (WEBSITE_URL + "/auth-callback.html");
+    const url = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=identify%20guilds.members.read`;
     res.json({ url });
 });
 
@@ -420,7 +457,8 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
     console.log("📥 Received PayPal webhook");
 
     // Verify webhook signature
-    if (!verifyPaypalWebhook(req.headers, req.body)) {
+    const isValid = await verifyPaypalWebhook(req.headers, req.body);
+    if (!isValid) {
         console.error("❌ Invalid webhook signature");
         return res.status(401).json({ success: false, message: "Unauthorized" });
     }
