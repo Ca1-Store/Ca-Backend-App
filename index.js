@@ -39,6 +39,7 @@ const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const WEBSITE_URL = process.env.WEBSITE_URL || "https://www.ca-store.store";
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "Admina091235239";
 
 const ROLE_PLAN_MAP = {
     "1479829127715618866": "CA-1",
@@ -356,14 +357,19 @@ app.post("/auth/callback", authLimiter, async (req, res) => {
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
         if (existing.rows.length > 0) {
-            // Allow HWID update if it's NULL (user registered from web first)
+            // Strict HWID check - user cannot change device
             if (existing.rows[0].hwid !== null && existing.rows[0].hwid !== hwid) {
                 return res.json({
                     success: false,
                     message: "هذا الحساب مسجّل على جهاز مختلف. تواصل مع الدعم."
                 });
             }
-            await db.query("UPDATE users SET hwid=$1, last_login=NOW() WHERE discord_id=$2", [hwid, discordId]);
+            // Allow HWID update only if NULL (first time login from app)
+            if (existing.rows[0].hwid === null) {
+                await db.query("UPDATE users SET hwid=$1, last_login=NOW() WHERE discord_id=$2", [hwid, discordId]);
+            } else {
+                await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
+            }
         } else {
             await db.query(
                 "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,$2,NOW())",
@@ -521,6 +527,102 @@ app.post("/auth/web/verify", async (req, res) => {
     } catch (err) {
         console.error("❌ Web verify error:", err);
         return res.json({ success: false, message: "Token منتهي أو غير صالح" });
+    }
+});
+
+/* ============================================================
+   ADMIN API: إعادة تعيين جهاز مستخدم (للأدمن فقط)
+============================================================ */
+app.post("/admin/reset-device", async (req, res) => {
+    const { adminSecret, discordId, newHwid } = req.body;
+
+    if (!adminSecret || !discordId || !newHwid) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    if (adminSecret !== ADMIN_SECRET) {
+        return res.json({ success: false, message: "غير مصرح" });
+    }
+
+    try {
+        await db.query(
+            "UPDATE users SET hwid=$1, last_login=NOW() WHERE discord_id=$2",
+            [newHwid, discordId]
+        );
+
+        console.log(`✅ Admin reset device for user ${discordId} to ${newHwid}`);
+
+        return res.json({ 
+            success: true, 
+            message: "تم تحديث الجهاز بنجاح"
+        });
+
+    } catch (err) {
+        console.error("❌ Admin reset device error:", err);
+        return res.json({ success: false, message: "خطأ في السيرفر" });
+    }
+});
+
+/* ============================================================
+   ADMIN API: حذف جهاز مستخدم (للأدمن فقط)
+============================================================ */
+app.post("/admin/remove-device", async (req, res) => {
+    const { adminSecret, discordId } = req.body;
+
+    if (!adminSecret || !discordId) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    if (adminSecret !== ADMIN_SECRET) {
+        return res.json({ success: false, message: "غير مصرح" });
+    }
+
+    try {
+        await db.query(
+            "UPDATE users SET hwid=NULL WHERE discord_id=$1",
+            [discordId]
+        );
+
+        console.log(`✅ Admin removed device for user ${discordId}`);
+
+        return res.json({ 
+            success: true, 
+            message: "تم حذف الجهاز بنجاح"
+        });
+
+    } catch (err) {
+        console.error("❌ Admin remove device error:", err);
+        return res.json({ success: false, message: "خطأ في السيرفر" });
+    }
+});
+
+/* ============================================================
+   ADMIN API: عرض جميع المستخدمين وأجهزتهم (للأدمن فقط)
+============================================================ */
+app.post("/admin/list-users", async (req, res) => {
+    const { adminSecret } = req.body;
+
+    if (!adminSecret) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    if (adminSecret !== ADMIN_SECRET) {
+        return res.json({ success: false, message: "غير مصرح" });
+    }
+
+    try {
+        const users = await db.query(
+            "SELECT discord_id, hwid, last_login FROM users ORDER BY last_login DESC"
+        );
+
+        return res.json({ 
+            success: true, 
+            users: users.rows
+        });
+
+    } catch (err) {
+        console.error("❌ Admin list users error:", err);
+        return res.json({ success: false, message: "خطأ في السيرفر" });
     }
 });
 
