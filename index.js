@@ -649,27 +649,53 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
         if (eventType === 'PAYPAL_WEBHOOK') {
             const event_type = body.event_type;
             
+            console.log(`📋 Event type: ${event_type}`);
+            
             if (event_type === 'PAYMENT.CAPTURE.COMPLETED' || event_type === 'PAYMENT.SALE.COMPLETED') {
                 const purchase_units = body.resource.purchase_units;
+                console.log(`📦 Purchase units:`, JSON.stringify(purchase_units));
+                
                 if (purchase_units && purchase_units.length > 0) {
                     const custom = purchase_units[0].custom_id;
+                    console.log(`🔑 Custom ID: ${custom}`);
+                    
                     if (custom) {
                         const params = new URLSearchParams(custom);
                         const discordId = params.get('discord_id');
                         const plan = params.get('plan');
+                        
+                        console.log(`👤 Discord ID: ${discordId}`);
+                        console.log(`📋 Plan: ${plan}`);
 
                         if (discordId && plan) {
                             const roleSuccess = await grantRoleToUser(discordId, plan);
                             const dmSuccess = await sendDMToUser(discordId, plan);
                             
                             if (roleSuccess && dmSuccess) {
+                                console.log(`✅ Successfully granted role and sent DM to ${discordId}`);
                                 return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح" });
                             } else if (roleSuccess) {
+                                console.log(`⚠️ Granted role but failed to send DM to ${discordId}`);
                                 return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة)" });
+                            } else {
+                                console.log(`❌ Failed to grant role to ${discordId}`);
+                                return res.json({ success: false, message: "فشل منح الرول" });
                             }
+                        } else {
+                            console.error(`❌ Missing discord_id or plan in custom_id`);
+                            return res.json({ success: false, message: "بيانات ناقصة في custom_id" });
                         }
+                    } else {
+                        console.error(`❌ No custom_id found in purchase_units`);
+                        return res.json({ success: false, message: "لا يوجد custom_id" });
                     }
+                } else {
+                    console.error(`❌ No purchase_units found`);
+                    return res.json({ success: false, message: "لا يوجد purchase_units" });
                 }
+            } else {
+                console.log(`ℹ️ Ignoring event type: ${event_type}`);
+                return res.json({ success: true, message: "تم استقبال الحدث" });
             }
         } 
         // Handle manual test (for testing without PayPal)
