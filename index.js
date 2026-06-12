@@ -149,6 +149,79 @@ async function grantRoleToUser(discordId, plan) {
 }
 
 /* ============================================================
+   helper: إرسال رسالة DM للمستخدم في Discord
+============================================================ */
+async function sendDMToUser(discordId, plan) {
+    try {
+        // Create DM channel
+        const dmRes = await fetch(
+            `https://discord.com/api/users/@me/channels`,
+            {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bot ${DISCORD_BOT_TOKEN}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    recipient_id: discordId
+                })
+            }
+        );
+
+        if (!dmRes.ok) {
+            console.error("❌ Failed to create DM channel");
+            return false;
+        }
+
+        const dmData = await dmRes.json();
+        const channelId = dmData.id;
+
+        // Send message
+        const message = `🎉 **تم الدفع بنجاح!**
+
+تم منح رتبة **${plan}** لحسابك في Discord.
+
+📥 **كيفية تنزيل الجرافيكس:**
+
+1. افتح موقع CA Store
+2. سجل الدخول بحسابك
+3. اذهب إلى صفحة "المنتجات"
+4. اختر النسخة التي اشتريتها
+5. اتبع التعليمات لتحميل الملفات
+
+💡 **ملاحظة:** إذا واجهت أي مشكلة، افتح تذكرة في سيرفر Discord.
+
+شكراً لشرائك من CA Store! 🚀`;
+
+        const msgRes = await fetch(
+            `https://discord.com/api/channels/${channelId}/messages`,
+            {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bot ${DISCORD_BOT_TOKEN}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    content: message
+                })
+            }
+        );
+
+        if (msgRes.ok) {
+            console.log(`✅ Sent DM to user ${discordId}`);
+            return true;
+        } else {
+            const error = await msgRes.text();
+            console.error(`❌ Failed to send DM: ${error}`);
+            return false;
+        }
+    } catch (err) {
+        console.error(`❌ Error sending DM:`, err);
+        return false;
+    }
+}
+
+/* ============================================================
    helper: التحقق من PayPal Webhook Signature (محسّن)
 ============================================================ */
 async function verifyPaypalWebhook(headers, body) {
@@ -481,9 +554,13 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
                         const plan = params.get('plan');
 
                         if (discordId && plan) {
-                            const success = await grantRoleToUser(discordId, plan);
-                            if (success) {
-                                return res.json({ success: true, message: "تم منح الرول بنجاح" });
+                            const roleSuccess = await grantRoleToUser(discordId, plan);
+                            const dmSuccess = await sendDMToUser(discordId, plan);
+                            
+                            if (roleSuccess && dmSuccess) {
+                                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح" });
+                            } else if (roleSuccess) {
+                                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة)" });
                             }
                         }
                     }
@@ -498,10 +575,13 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
                 return res.json({ success: false, message: "بيانات ناقصة" });
             }
 
-            const success = await grantRoleToUser(discordId, plan);
+            const roleSuccess = await grantRoleToUser(discordId, plan);
+            const dmSuccess = await sendDMToUser(discordId, plan);
 
-            if (success) {
-                return res.json({ success: true, message: "تم منح الرول بنجاح (اختبار يدوي)" });
+            if (roleSuccess && dmSuccess) {
+                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح (اختبار يدوي)" });
+            } else if (roleSuccess) {
+                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة) - اختبار يدوي" });
             } else {
                 return res.json({ success: false, message: "فشل منح الرول" });
             }
