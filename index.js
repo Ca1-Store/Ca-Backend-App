@@ -36,6 +36,7 @@ const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
+const DISCORD_LOGS_CHANNEL_ID = process.env.DISCORD_LOGS_CHANNEL_ID || ""; // معرف روم السجلات
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID || "";
@@ -220,6 +221,91 @@ async function sendDMToUser(discordId, plan) {
         }
     } catch (err) {
         console.error(`❌ Error sending DM:`, err);
+        return false;
+    }
+}
+
+/* ============================================================
+   helper: إرسال رسالة إلى روم السجلات في Discord
+============================================================ */
+async function sendLogToDiscord(discordId, plan, amount, paymentMethod) {
+    if (!DISCORD_LOGS_CHANNEL_ID) {
+        console.warn("⚠️ DISCORD_LOGS_CHANNEL_ID not configured");
+        return false;
+    }
+
+    try {
+        // Get user info from Discord
+        const userRes = await fetch(
+            `https://discord.com/api/users/${discordId}`,
+            { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } }
+        );
+        const user = await userRes.json();
+
+        const username = user.username || "Unknown";
+        const avatar = user.avatar ? `https://cdn.discordapp.com/avatars/${discordId}/${user.avatar}.png` : null;
+
+        // Create embed message
+        const embed = {
+            title: "🛒 عملية شراء جديدة",
+            color: 5763719, // Green color
+            fields: [
+                {
+                    name: "👤 حساب Discord",
+                    value: `<@${discordId}> (${username})`,
+                    inline: true
+                },
+                {
+                    name: "📦 المنتج",
+                    value: plan,
+                    inline: true
+                },
+                {
+                    name: "💰 المبلغ",
+                    value: amount + " USD",
+                    inline: true
+                },
+                {
+                    name: "💳 طريقة الدفع",
+                    value: paymentMethod,
+                    inline: true
+                },
+                {
+                    name: "📅 التاريخ",
+                    value: new Date().toLocaleString("ar-SA"),
+                    inline: true
+                }
+            ],
+            footer: {
+                text: "CA Store - نظام الشراء الآلي"
+            },
+            timestamp: new Date().toISOString()
+        };
+
+        const msgRes = await fetch(
+            `https://discord.com/api/channels/${DISCORD_LOGS_CHANNEL_ID}/messages`,
+            {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bot ${DISCORD_BOT_TOKEN}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    embeds: [embed]
+                })
+            }
+        );
+
+        if (msgRes.ok) {
+            console.log(`✅ Sent log to Discord channel`);
+            return true;
+        } else {
+            const error = await msgRes.text();
+            console.error(`❌ Failed to send log: ${error}`);
+            return false;
+        }
+    } catch (err) {
+        console.error(`❌ Error sending log:`, err);
         return false;
     }
 }
@@ -668,15 +754,22 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
                         console.log(`📋 Plan: ${plan}`);
 
                         if (discordId && plan) {
+                            const amount = purchase_units[0].amount.value;
+                            const paymentMethod = "PayPal";
+                            
                             const roleSuccess = await grantRoleToUser(discordId, plan);
                             const dmSuccess = await sendDMToUser(discordId, plan);
+                            const logSuccess = await sendLogToDiscord(discordId, plan, amount, paymentMethod);
                             
-                            if (roleSuccess && dmSuccess) {
-                                console.log(`✅ Successfully granted role and sent DM to ${discordId}`);
-                                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح" });
+                            if (roleSuccess && dmSuccess && logSuccess) {
+                                console.log(`✅ Successfully granted role, sent DM, and logged to Discord for ${discordId}`);
+                                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة وتسجيل العملية بنجاح" });
+                            } else if (roleSuccess && dmSuccess) {
+                                console.log(`⚠️ Granted role and sent DM but failed to log for ${discordId}`);
+                                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح (فشل التسجيل)" });
                             } else if (roleSuccess) {
-                                console.log(`⚠️ Granted role but failed to send DM to ${discordId}`);
-                                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة)" });
+                                console.log(`⚠️ Granted role but failed to send DM and log for ${discordId}`);
+                                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة والتسجيل)" });
                             } else {
                                 console.log(`❌ Failed to grant role to ${discordId}`);
                                 return res.json({ success: false, message: "فشل منح الرول" });
@@ -708,11 +801,14 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
 
             const roleSuccess = await grantRoleToUser(discordId, plan);
             const dmSuccess = await sendDMToUser(discordId, plan);
+            const logSuccess = await sendLogToDiscord(discordId, plan, "0.00", "Manual Test");
 
-            if (roleSuccess && dmSuccess) {
-                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح (اختبار يدوي)" });
+            if (roleSuccess && dmSuccess && logSuccess) {
+                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة وتسجيل العملية بنجاح (اختبار يدوي)" });
+            } else if (roleSuccess && dmSuccess) {
+                return res.json({ success: true, message: "تم منح الرول وإرسال الرسالة بنجاح (فشل التسجيل) - اختبار يدوي" });
             } else if (roleSuccess) {
-                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة) - اختبار يدوي" });
+                return res.json({ success: true, message: "تم منح الرول بنجاح (فشل إرسال الرسالة والتسجيل) - اختبار يدوي" });
             } else {
                 return res.json({ success: false, message: "فشل منح الرول" });
             }
