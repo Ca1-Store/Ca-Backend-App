@@ -36,7 +36,7 @@ const db = new Pool({ connectionString: process.env.DATABASE_URL });
 const JWT_SECRET = process.env.JWT_SECRET;
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DISCORD_GUILD_ID = process.env.DISCORD_GUILD_ID;
-const DISCORD_LOGS_CHANNEL_ID = process.env.DISCORD_LOGS_CHANNEL_ID || ""; // معرف روم السجلات
+const DISCORD_LOGS_CHANNEL_ID = process.env.DISCORD_LOGS_CHANNEL_ID || "";
 const CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID || "";
@@ -157,7 +157,6 @@ async function grantRoleToUser(discordId, plan) {
 ============================================================ */
 async function sendDMToUser(discordId, plan) {
     try {
-        // Create DM channel
         const dmRes = await fetch(
             `https://discord.com/api/users/@me/channels`,
             {
@@ -180,7 +179,6 @@ async function sendDMToUser(discordId, plan) {
         const dmData = await dmRes.json();
         const channelId = dmData.id;
 
-        // Send message
         const message = `🎉 **تم الدفع بنجاح!**
 
 تم منح رتبة **${plan}** لحسابك في Discord.
@@ -235,7 +233,6 @@ async function sendLogToDiscord(discordId, plan, amount, paymentMethod) {
     }
 
     try {
-        // Get user info from Discord
         const userRes = await fetch(
             `https://discord.com/api/users/${discordId}`,
             { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } }
@@ -245,10 +242,9 @@ async function sendLogToDiscord(discordId, plan, amount, paymentMethod) {
         const username = user.username || "Unknown";
         const avatar = user.avatar ? `https://cdn.discordapp.com/avatars/${discordId}/${user.avatar}.png` : null;
 
-        // Create embed message
         const embed = {
             title: "🛒 عملية شراء جديدة",
-            color: 5763719, // Green color
+            color: 5763719,
             fields: [
                 {
                     name: "👤 حساب Discord",
@@ -319,21 +315,17 @@ async function verifyPaypalWebhook(headers, body) {
     const actualSig = headers['paypal-transmission-sig'];
     const auth_algo = headers['paypal-auth-algo'];
 
-    // Check for PayPal webhook headers
     if (transmissionId || timestamp || actualSig || auth_algo) {
-        // This is a real PayPal webhook
         if (!transmissionId || !timestamp || !actualSig || !auth_algo) {
             console.error("❌ Missing PayPal webhook headers");
             return false;
         }
 
-        // For testing, you can skip verification by checking a flag
         if (process.env.SKIP_WEBHOOK_VERIFICATION === "true") {
             console.log("⚠️ Webhook verification skipped (testing mode)");
             return true;
         }
 
-        // Verify PayPal webhook signature using PayPal API
         try {
             const verifyUrl = `https://api-m.paypal.com/v1/notifications/verify-webhook-signature`;
             
@@ -371,7 +363,6 @@ async function verifyPaypalWebhook(headers, body) {
         }
     }
 
-    // Check for manual test with WEBHOOK_SECRET (from body)
     const providedSecret = body.secret;
     if (providedSecret) {
         if (!WEBHOOK_SECRET) {
@@ -445,14 +436,12 @@ app.post("/auth/callback", authLimiter, async (req, res) => {
         const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
 
         if (existing.rows.length > 0) {
-            // Strict HWID check - user cannot change device
             if (existing.rows[0].hwid !== null && existing.rows[0].hwid !== hwid) {
                 return res.json({
                     success: false,
                     message: "هذا الحساب مسجّل على جهاز مختلف. تواصل مع الدعم."
                 });
             }
-            // Allow HWID update only if NULL (first time login from app)
             if (existing.rows[0].hwid === null) {
                 await db.query("UPDATE users SET hwid=$1, last_login=NOW() WHERE discord_id=$2", [hwid, discordId]);
             } else {
@@ -720,7 +709,6 @@ app.post("/admin/list-users", async (req, res) => {
 app.post("/webhook/payment", webhookLimiter, async (req, res) => {
     console.log("📥 Received PayPal webhook");
 
-    // Verify webhook signature
     const isValid = await verifyPaypalWebhook(req.headers, req.body);
     if (!isValid) {
         console.error("❌ Invalid webhook signature");
@@ -731,7 +719,6 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
         const eventType = req.headers['paypal-transmission-id'] ? 'PAYPAL_WEBHOOK' : 'MANUAL_TEST';
         const body = req.body;
 
-        // Handle PayPal webhook event
         if (eventType === 'PAYPAL_WEBHOOK') {
             const event_type = body.event_type;
             
@@ -791,7 +778,6 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
                 return res.json({ success: true, message: "تم استقبال الحدث" });
             }
         } 
-        // Handle manual test (for testing without PayPal)
         else if (eventType === 'MANUAL_TEST') {
             const { discordId, plan } = body;
             
@@ -961,4 +947,52 @@ app.get("/api/mods", async (req, res) => {
     res.json({ success: true, sections });
 });
 
+/* ============================================================
+   API: جلب بيانات Customizations
+============================================================ */
+app.get("/api/customizations", async (req, res) => {
+    const customizations = [
+        {
+            id: "no_water",
+            name: "No Water",
+            description: "إزالة الماء من اللعبة لتحسين الأداء والمظهر",
+            file: "water.xml",
+            destination: "FiveM/FiveM.app/citizen/common/data/levels/gta5",
+            url: "http://213.199.63.97/water.xml",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>`,
+            warning: "قد يؤثر على بعض السيناريوهات التي تعتمد على الماء"
+        },
+        {
+            id: "no_snow",
+            name: "No Snow",
+            description: "إزالة الثلج من اللعبة لتحسين الأداء",
+            file: "weather.xml",
+            destination: "FiveM/FiveM.app/citizen/common/data/levels/gta5",
+            url: "http://213.199.63.97/weather.xml",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/></svg>`,
+            warning: "قد يؤثر على المناخ في بعض السيناريوهات"
+        },
+        {
+            id: "no_mountain",
+            name: "No Mountain",
+            description: "إزالة جبل تشيلياد لتحسين الأداء",
+            file: "no_mountain.rpf",
+            destination: "FiveM/FiveM.app/mods",
+            url: "http://213.199.63.97/no_mountain.rpf",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 22h20L12 2z"/></svg>`,
+            warning: "قد يؤثر على المظهر الجغرافي للعبة"
+        },
+        {
+            id: "no_rain",
+            name: "No Rain",
+            description: "إزالة المطر لتحسين الأداء",
+            file: "no_rain.rpf",
+            destination: "FiveM/FiveM.app/mods",
+            url: "http://213.199.63.97/no_rain.rpf",
+            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-.8a7 7 0 1 0-13.4 0H3a4.5 4.5 0 0 0 0 9h17z"/></svg>`,
+            warning: "قد يؤثر على الطقس في بعض السيناريوهات"
+        }
+    ];
+    res.json({ success: true, customizations });
+});
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
