@@ -951,7 +951,7 @@ app.get("/api/mods", async (req, res) => {
    API: جلب بيانات Customizations
 ============================================================ */
 app.get("/api/customizations", async (req, res) => {
-    const customizations = [
+    const customizationsArray = [
         {
             id: "no_water",
             name: "No Water",
@@ -993,6 +993,21 @@ app.get("/api/customizations", async (req, res) => {
             warning: "قد يؤثر على الطقس في بعض السيناريوهات"
         }
     ];
+    
+    // Convert array to object keyed by ID and rename url to download_url
+    const customizations = {};
+    for (const item of customizationsArray) {
+        customizations[item.id] = {
+            download_url: item.url,
+            name: item.name,
+            description: item.description,
+            file: item.file,
+            destination: item.destination,
+            icon: item.icon,
+            warning: item.warning
+        };
+    }
+    
     res.json({ success: true, customizations });
 });
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
