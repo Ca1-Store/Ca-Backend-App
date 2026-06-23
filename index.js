@@ -8,8 +8,10 @@ const crypto = require("crypto");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
+app.set('trust proxy', true); // إضافة هذا السطر
 app.use(express.json());
 
+// باقي الكود كما هو...
 // CORS Configuration
 const allowedOrigins = [
     "https://www.ca-store.store",
