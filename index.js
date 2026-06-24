@@ -8,10 +8,9 @@ const crypto = require("crypto");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const app = express();
-app.set('trust proxy', true); // إضافة هذا السطر
+app.set('trust proxy', true);
 app.use(express.json());
 
-// باقي الكود كما هو...
 // CORS Configuration
 const allowedOrigins = [
     "https://www.ca-store.store",
@@ -61,6 +60,7 @@ const PLAN_ROLE_MAP = {
     "CA-4": "1509080955858456687",
     "CA-5": "1518902435421225121",
 };
+
 // Rate Limiting
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -74,6 +74,12 @@ const webhookLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 5,
     message: { success: false, message: "Too many webhook requests" }
+});
+
+const ratingsLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    message: { success: false, message: "Too many rating requests" }
 });
 
 // IP Logging Middleware
@@ -99,6 +105,38 @@ db.query(`
         expires_at TIMESTAMP
     )
 `).catch(err => console.error("Sessions table error:", err));
+
+/* ============================================================
+   RATINGS & COMMENTS TABLES
+============================================================ */
+db.query(`
+    CREATE TABLE IF NOT EXISTS ratings (
+        id SERIAL PRIMARY KEY,
+        pack_id TEXT NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+        username TEXT NOT NULL,
+        discord_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )
+`).catch(err => console.error("Ratings table error:", err));
+
+db.query(`
+    CREATE TABLE IF NOT EXISTS comments (
+        id SERIAL PRIMARY KEY,
+        pack_id TEXT NOT NULL,
+        comment TEXT NOT NULL,
+        rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+        username TEXT NOT NULL,
+        discord_id TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+    )
+`).catch(err => console.error("Comments table error:", err));
+
+// Create indexes for performance
+db.query(`CREATE INDEX IF NOT EXISTS idx_ratings_pack_id ON ratings(pack_id)`)
+    .catch(err => console.error("Index error:", err));
+db.query(`CREATE INDEX IF NOT EXISTS idx_comments_pack_id ON comments(pack_id)`)
+    .catch(err => console.error("Index error:", err));
 
 /* ============================================================
    helper: جيب كل النسخ اللي عند المستخدم من Discord
@@ -812,6 +850,163 @@ app.post("/webhook/payment", webhookLimiter, async (req, res) => {
 });
 
 /* ============================================================
+   RATINGS API - نظام التقييمات الأونلاين
+============================================================ */
+
+/* ============================================================
+   GET /api/ratings - جلب جميع التقييمات
+============================================================ */
+app.get("/api/ratings", async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT pack_id, 
+                   AVG(rating) as average_rating, 
+                   COUNT(*) as total_ratings
+            FROM ratings
+            GROUP BY pack_id
+        `);
+
+        const ratings = {};
+        for (const row of result.rows) {
+            ratings[row.pack_id] = {
+                averageRating: parseFloat(row.average_rating).toFixed(1),
+                totalRatings: parseInt(row.total_ratings)
+            };
+        }
+
+        res.json({ success: true, ratings });
+    } catch (err) {
+        console.error("Error fetching ratings:", err);
+        res.status(500).json({ success: false, message: "خطأ في جلب التقييمات" });
+    }
+});
+
+/* ============================================================
+   GET /api/ratings/:packId - جلب تقييمات باك معين
+============================================================ */
+app.get("/api/ratings/:packId", async (req, res) => {
+    const { packId } = req.params;
+
+    try {
+        // جلب التقييمات
+        const ratingsResult = await db.query(
+            "SELECT * FROM ratings WHERE pack_id = $1 ORDER BY created_at DESC",
+            [packId]
+        );
+
+        // جلب التعليقات
+        const commentsResult = await db.query(
+            "SELECT * FROM comments WHERE pack_id = $1 ORDER BY created_at DESC",
+            [packId]
+        );
+
+        // حساب المتوسط
+        let averageRating = 0;
+        if (ratingsResult.rows.length > 0) {
+            const sum = ratingsResult.rows.reduce((acc, r) => acc + r.rating, 0);
+            averageRating = (sum / ratingsResult.rows.length).toFixed(1);
+        }
+
+        res.json({
+            success: true,
+            ratings: ratingsResult.rows,
+            comments: commentsResult.rows,
+            averageRating: parseFloat(averageRating),
+            totalRatings: ratingsResult.rows.length
+        });
+    } catch (err) {
+        console.error("Error fetching pack ratings:", err);
+        res.status(500).json({ success: false, message: "خطأ في جلب تقييمات الباك" });
+    }
+});
+
+/* ============================================================
+   POST /api/ratings - إرسال تقييم جديد
+============================================================ */
+app.post("/api/ratings", ratingsLimiter, async (req, res) => {
+    const { packId, rating, comment, username, discordId } = req.body;
+
+    if (!packId || !rating || !username) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    if (rating < 1 || rating > 5) {
+        return res.json({ success: false, message: "التقييم يجب أن يكون بين 1 و 5" });
+    }
+
+    try {
+        // إضافة التقييم
+        await db.query(
+            "INSERT INTO ratings (pack_id, rating, username, discord_id) VALUES ($1, $2, $3, $4)",
+            [packId, rating, username, discordId || null]
+        );
+
+        // إضافة التعليق إذا وجد
+        if (comment && comment.trim()) {
+            await db.query(
+                "INSERT INTO comments (pack_id, comment, rating, username, discord_id) VALUES ($1, $2, $3, $4, $5)",
+                [packId, comment.trim(), rating, username, discordId || null]
+            );
+        }
+
+        // حساب المتوسط الجديد
+        const result = await db.query(
+            "SELECT AVG(rating) as avg, COUNT(*) as count FROM ratings WHERE pack_id = $1",
+            [packId]
+        );
+
+        const averageRating = parseFloat(result.rows[0].avg).toFixed(1);
+        const totalRatings = parseInt(result.rows[0].count);
+
+        res.json({ 
+            success: true, 
+            averageRating, 
+            totalRatings 
+        });
+    } catch (err) {
+        console.error("Error submitting rating:", err);
+        res.status(500).json({ success: false, message: "خطأ في إرسال التقييم" });
+    }
+});
+
+/* ============================================================
+   DELETE /api/ratings/comment - حذف تعليق
+============================================================ */
+app.delete("/api/ratings/comment", async (req, res) => {
+    const { commentId, discordId } = req.body;
+
+    if (!commentId) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    try {
+        // التحقق من أن المستخدم هو صاحب التعليق أو أدمن
+        const commentResult = await db.query(
+            "SELECT * FROM comments WHERE id = $1",
+            [commentId]
+        );
+
+        if (commentResult.rows.length === 0) {
+            return res.json({ success: false, message: "التعليق غير موجود" });
+        }
+
+        const comment = commentResult.rows[0];
+
+        // السماح بالحذف إذا كان المستخدم هو صاحب التعليق
+        if (discordId && comment.discord_id !== discordId) {
+            return res.json({ success: false, message: "غير مصرح بحذف هذا التعليق" });
+        }
+
+        await db.query("DELETE FROM comments WHERE id = $1", [commentId]);
+
+        res.json({ success: true, message: "تم حذف التعليق بنجاح" });
+    } catch (err) {
+        console.error("Error deleting comment:", err);
+        res.status(500).json({ success: false, message: "خطأ في حذف التعليق" });
+    }
+});
+
+/* ============================================================
    API: جلب بيانات الـ Packs مع نظام الـ Versions
 ============================================================ */
 app.get("/api/packs", async (req, res) => {
@@ -923,6 +1118,7 @@ app.get("/api/packs", async (req, res) => {
     ];
     res.json({ success: true, packs });
 });
+
 /* ============================================================
    API: جلب بيانات المودات
 ============================================================ */
@@ -932,7 +1128,7 @@ app.get("/api/mods", async (req, res) => {
             title: "Roads",
             subtitle: "تحتاج أي نسخة",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17L9 3l6 14"/><path d="M6 11h6"/></svg>`,
-            requiredPlans: ["CA-1", "CA-2", "CA-3", "CA-4"],
+            requiredPlans: ["CA-1", "CA-2", "CA-3", "CA-4", "CA-5"],
             mods: [
                 { name: "European Roads", file: "European_Roads.rpf", img: "../assets/Europe.png", url: "http://213.199.63.97/European_Roads.rpf" },
                 { name: "German Roads", file: "German_Roads.rpf", img: "../assets/German_Roads.png", url: "http://213.199.63.97/German_Roads.rpf" },
@@ -944,7 +1140,7 @@ app.get("/api/mods", async (req, res) => {
             title: "Vegetation",
             subtitle: "تحتاج النسخة الثانية أو الثالثة",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 7 4s0 5 5 8"/><path d="M12 12c0-5 5-8 5-8s0 5-5 8"/></svg>`,
-            requiredPlans: ["CA-2", "CA-3", "CA-4"],
+            requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
             mods: [
                 { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://213.199.63.97/CA_Vegetation.rpf" },
                 { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://213.199.63.97/CA_Extra_Vegetation.rpf" },
@@ -955,7 +1151,7 @@ app.get("/api/mods", async (req, res) => {
             title: "Addons",
             subtitle: "تحتاج النسخة الثانية أو الثالثة",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><rect x="10" y="10" width="5" height="5"/></svg>`,
-            requiredPlans: ["CA-2", "CA-3", "CA-4"],
+            requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
             mods: [
                 { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://213.199.63.97/CA_Halloween_Pack.rpf" },
                 { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://213.199.63.97/CA_Christmas_Pack.rpf" },
@@ -1015,7 +1211,6 @@ app.get("/api/customizations", async (req, res) => {
         }
     ];
     
-    // Convert array to object keyed by ID and rename url to download_url
     const customizations = {};
     for (const item of customizationsArray) {
         customizations[item.id] = {
@@ -1031,4 +1226,5 @@ app.get("/api/customizations", async (req, res) => {
     
     res.json({ success: true, customizations });
 });
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
