@@ -51,6 +51,7 @@ const ROLE_PLAN_MAP = {
     "1479829984385171557": "CA-2",
     "1502945235817467974": "CA-3",
     "1509080955858456687": "CA-4",
+    "1518902435421225121": "CA-5",
 };
 
 const PLAN_ROLE_MAP = {
@@ -58,8 +59,8 @@ const PLAN_ROLE_MAP = {
     "CA-2": "1479829984385171557",
     "CA-3": "1502945235817467974",
     "CA-4": "1509080955858456687",
+    "CA-5": "1518902435421225121",
 };
-
 // Rate Limiting
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -899,11 +900,29 @@ app.get("/api/packs", async (req, res) => {
                     url: "http://213.199.63.97/CA-4%20PACK.zip"
                 }
             ]
+        },
+        {
+            id: "CA5",
+            plan: "CA-5",
+            name: "CA - Pack 5",
+            level: 5,
+            images: ["../assets/CA5.png", "../assets/CA51.png", "../assets/CA52.png"],
+            url: "http://213.199.63.97/CA-5%20PACK.zip",
+            versions: [
+                {
+                    version: "1.0",
+                    date: "2026-06-24",
+                    latest: true,
+                    size: "5 GB",
+                    features: ["جرافيكس فائق الجودة", "أداء محسّن"],
+                    changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
+                    url: "http://213.199.63.97/CA-5%20PACK.zip"
+                }
+            ]
         }
     ];
     res.json({ success: true, packs });
 });
-
 /* ============================================================
    API: جلب بيانات المودات
 ============================================================ */
