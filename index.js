@@ -1007,6 +1007,53 @@ app.delete("/api/ratings/comment", async (req, res) => {
 });
 
 /* ============================================================
+   DELETE /api/ratings/rating - حذف تقييم
+============================================================ */
+app.delete("/api/ratings/rating", async (req, res) => {
+    const { ratingId } = req.body;
+
+    if (!ratingId) {
+        return res.json({ success: false, message: "بيانات ناقصة" });
+    }
+
+    try {
+        // جلب التقييم قبل الحذف لمعرفة pack_id
+        const ratingResult = await db.query(
+            "SELECT pack_id FROM ratings WHERE id = $1",
+            [ratingId]
+        );
+
+        if (ratingResult.rows.length === 0) {
+            return res.json({ success: false, message: "التقييم غير موجود" });
+        }
+
+        const packId = ratingResult.rows[0].pack_id;
+
+        // حذف التقييم
+        await db.query("DELETE FROM ratings WHERE id = $1", [ratingId]);
+
+        // حساب المتوسط الجديد
+        const result = await db.query(
+            "SELECT AVG(rating) as avg, COUNT(*) as count FROM ratings WHERE pack_id = $1",
+            [packId]
+        );
+
+        const averageRating = result.rows[0].avg ? parseFloat(result.rows[0].avg).toFixed(1) : 0;
+        const totalRatings = parseInt(result.rows[0].count);
+
+        res.json({ 
+            success: true, 
+            message: "تم حذف التقييم بنجاح",
+            averageRating,
+            totalRatings
+        });
+    } catch (err) {
+        console.error("Error deleting rating:", err);
+        res.status(500).json({ success: false, message: "خطأ في حذف التقييم" });
+    }
+});
+
+/* ============================================================
    API: جلب بيانات الـ Packs مع نظام الـ Versions
 ============================================================ */
 app.get("/api/packs", async (req, res) => {
