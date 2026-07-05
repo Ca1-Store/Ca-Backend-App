@@ -1170,47 +1170,82 @@ app.get("/api/packs", async (req, res) => {
    API: جلب بيانات المودات
 ============================================================ */
 app.get("/api/mods", async (req, res) => {
-    const sections = [
-        {
-            title: "Roads",
-            subtitle: "تحتاج أي نسخة",
-            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17L9 3l6 14"/><path d="M6 11h6"/></svg>`,
-            requiredPlans: ["CA-1", "CA-2", "CA-3", "CA-4", "CA-5"],
-            mods: [
-                { name: "European Roads", file: "European_Roads.rpf", img: "../assets/Europe.png", url: "http://147.93.156.124/European_Roads.rpf" },
-                { name: "German Roads", file: "German_Roads.rpf", img: "../assets/German_Roads.png", url: "http://147.93.156.124/German_Roads.rpf" },
-                { name: "Ls Roads", file: "Ls_Roads_Pack.rpf", img: "../assets/nve.png", url: "http://147.93.156.124/Ls_Roads_Pack.rpf" },
-                { name: "Liberty Roads", file: "Liberty_Roads.rpf", img: "../assets/Liberty.png", url: "http://147.93.156.124/Liberty_Roads.rpf" }
-            ]
-        },
-        {
-            title: "Vegetation",
-            subtitle: "تحتاج النسخة الثانية أو الثالثة",
-            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 7 4s0 5 5 8"/><path d="M12 12c0-5 5-8 5-8s0 5-5 8"/></svg>`,
-            requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
-            mods: [
-                { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Vegetation.rpf" },
-                { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Extra_Vegetation.rpf" },
-                { name: "Sandy Shores Vegetation", file: "CA_Sandy_Shores_Vegetation.rpf", img: "../assets/Sandy.png", url: "http://147.93.156.124/CA_Sandy_Shores_Vegetation.rpf" }
-            ]
-        },
-        {
-            title: "Addons",
-            subtitle: "تحتاج النسخة الثانية أو الثالثة",
-            icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><rect x="10" y="10" width="5" height="5"/></svg>`,
-            requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
-            mods: [
-                { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://147.93.156.124/CA_Halloween_Pack.rpf" },
-                { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://147.93.156.124/CA_Christmas_Pack.rpf" },
-                { name: "Weather FOGGY", file: "CA_Foggy.rpf", img: "../assets/Foggy_Deep Weather.jpg", url: "http://147.93.156.124/CA_Foggy.rpf" },
-                { name: "Volumetric Clouds", file: "CA_Volumetric_Clouds.rpf", img: "../assets/vol.png", url: "http://147.93.156.124/CA_Volumetric_Clouds.rpf" },
-                { name: "Snowy Mount Chiliad", file: "CA_Snowy_Mount_Chilliad.rpf", img: "../assets/Mount.png", url: "http://147.93.156.124/CA_Snowy_Mount_Chilliad.rpf" }
-            ]
-        }
-    ];
+const sections = [
+    {
+        title: "Roads",
+        subtitle: "تحتاج أي نسخة",
+        icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17L9 3l6 14"/><path d="M6 11h6"/></svg>`,
+        requiredPlans: ["CA-1", "CA-2", "CA-3", "CA-4", "CA-5"],
+        mods: [
+            { name: "European Roads", file: "European_Roads.rpf", img: "../assets/Europe.png", url: "http://147.93.156.124/European_Roads.rpf" },
+            { name: "German Roads", file: "German_Roads.rpf", img: "../assets/German_Roads.png", url: "http://147.93.156.124/German_Roads.rpf" },
+            { name: "Ls Roads", file: "Ls_Roads_Pack.rpf", img: "../assets/nve.png", url: "http://147.93.156.124/Ls_Roads_Pack.rpf" },
+            { name: "Liberty Roads", file: "Liberty_Roads.rpf", img: "../assets/Liberty.png", url: "http://147.93.156.124/Liberty_Roads.rpf" }
+        ]
+    },
+    {
+        title: "Premium Customers",
+        subtitle: "للعملاء المميزين",
+        icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.56 5.82 22 7 14.14l-5-4.87 6.91-1.01L12 2z"/></svg>`,
+        requiredPlans: ["CA-5"],
+        requiredRoles: [
+            "1479825414955339947",
+            "1509656031427297475"
+        ],
+        mods: [
+            {
+                name: "California Roads",
+                file: "California_Roads.rpf",
+                img: "../assets/California_Roads.png",
+                url: "http://147.93.156.124/California_Roads.rpf"
+            },
+            {
+                name: "Forza Roads",
+                file: "Forza_Roads.rpf",
+                img: "../assets/Forza_Roads.png",
+                url: "http://147.93.156.124/Forza_Roads.rpf"
+            },
+            {
+                name: "Monaco Roads",
+                file: "Monaco_Roads.rpf",
+                img: "../assets/Monaco_Roads.png",
+                url: "http://147.93.156.124/Monaco_Roads.rpf"
+            },
+            {
+                name: "San Francisco Roads",
+                file: "SanFrancisco_Roads.rpf",
+                img: "../assets/SanFrancisco_Roads.png",
+                url: "http://147.93.156.124/SanFrancisco_Roads.rpf"
+            }
+        ]
+    },
+    {
+        title: "Vegetation",
+        subtitle: "تحتاج النسخة الثانية أو الثالثة",
+        icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 7 4s0 5 5 8"/><path d="M12 12c0-5 5-8 5-8s0 5-5 8"/></svg>`,
+        requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
+        mods: [
+            { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Vegetation.rpf" },
+            { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Extra_Vegetation.rpf" },
+            { name: "Sandy Shores Vegetation", file: "CA_Sandy_Shores_Vegetation.rpf", img: "../assets/Sandy.png", url: "http://147.93.156.124/CA_Sandy_Shores_Vegetation.rpf" }
+        ]
+    },
+    {
+        title: "Addons",
+        subtitle: "تحتاج النسخة الثانية أو الثالثة",
+        icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><rect x="10" y="10" width="5" height="5"/></svg>`,
+        requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
+        mods: [
+            { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://147.93.156.124/CA_Halloween_Pack.rpf" },
+            { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://147.93.156.124/CA_Christmas_Pack.rpf" },
+            { name: "Weather FOGGY", file: "CA_Foggy.rpf", img: "../assets/Foggy_Deep Weather.jpg", url: "http://147.93.156.124/CA_Foggy.rpf" },
+            { name: "Volumetric Clouds", file: "CA_Volumetric_Clouds.rpf", img: "../assets/vol.png", url: "http://147.93.156.124/CA_Volumetric_Clouds.rpf" },
+            { name: "Snowy Mount Chiliad", file: "CA_Snowy_Mount_Chilliad.rpf", img: "../assets/Mount.png", url: "http://147.93.156.124/CA_Snowy_Mount_Chilliad.rpf" }
+        ]
+    }
+];
     res.json({ success: true, sections });
 });
-
 /* ============================================================
    API: جلب بيانات Customizations
 ============================================================ */
