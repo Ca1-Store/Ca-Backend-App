@@ -1216,7 +1216,13 @@ const sections = [
                 file: "SanFrancisco_Roads.rpf",
                 img: "../assets/SanFrancisco_Roads.png",
                 url: "http://147.93.156.124/SanFrancisco_Roads.rpf"
-            }
+             },
+             {
+                 name: "Red Vegetation",
+                file: "CA_Red_Veget.rpf",
+                img: "../assets/Red.png",
+                url: "http://147.93.156.124/CA_Red_Veget.rpf"
+            },
         ]
     },
     {
