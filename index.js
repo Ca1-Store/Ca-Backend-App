@@ -44,6 +44,7 @@ const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID || "";
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const WEBSITE_URL = process.env.WEBSITE_URL || "https://www.ca-store.store";
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "Admina091235239";
+const ADMIN_DISCORD_ID = "1336347875206234292";
 
 const ROLE_PLAN_MAP = {
     "1479829127715618866": "CA-1",
@@ -992,12 +993,13 @@ app.delete("/api/ratings/comment", async (req, res) => {
 
         const comment = commentResult.rows[0];
 
-        // السماح بالحذف إذا كان المستخدم هو صاحب التعليق
-        if (discordId && comment.discord_id !== discordId) {
-            return res.json({ success: false, message: "غير مصرح بحذف هذا التعليق" });
-        }
+// السماح بالحذف إذا كان المستخدم هو صاحب التعليق أو أدمن
+const isOwner = discordId && comment.discord_id === discordId;
+const isAdmin = discordId === ADMIN_DISCORD_ID;
 
-        await db.query("DELETE FROM comments WHERE id = $1", [commentId]);
+if (!isOwner && !isAdmin) {
+    return res.json({ success: false, message: "غير مصرح بحذف هذا التعليق" });
+}        await db.query("DELETE FROM comments WHERE id = $1", [commentId]);
 
         res.json({ success: true, message: "تم حذف التعليق بنجاح" });
     } catch (err) {
@@ -1010,14 +1012,18 @@ app.delete("/api/ratings/comment", async (req, res) => {
    DELETE /api/ratings/rating - حذف تقييم
 ============================================================ */
 app.delete("/api/ratings/rating", async (req, res) => {
-    const { ratingId } = req.body;
+    const { ratingId, discordId } = req.body;
 
     if (!ratingId) {
         return res.json({ success: false, message: "بيانات ناقصة" });
     }
 
-    try {
-        // جلب التقييم قبل الحذف لمعرفة pack_id
+    // فقط الأدمن يقدر يحذف تقييم
+    if (discordId !== ADMIN_DISCORD_ID) {
+        return res.json({ success: false, message: "غير مصرح بحذف هذا التقييم" });
+    }
+
+    try {        // جلب التقييم قبل الحذف لمعرفة pack_id
         const ratingResult = await db.query(
             "SELECT pack_id FROM ratings WHERE id = $1",
             [ratingId]
