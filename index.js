@@ -1070,7 +1070,7 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 1",
             level: 1,
             images: ["../assets/Ca--Pack.png", "../assets/Ca-1.png", "../assets/Ca-1v1.png"],
-            url: "http://147.93.156.124/CA-1%20PACK.zip",
+            url: "http://169.58.57.199/CA-1%20PACK.zip",
             versions: [
                 {
                     version: "1.0",
@@ -1079,7 +1079,7 @@ app.get("/api/packs", async (req, res) => {
                     size: "1.80 GB",
                     features: ["الإصدار الأولي", "جرافيكس أساسي"],
                     changelog: "الإصدار الأولي من باك الجرافيكس",
-                    url: "http://147.93.156.124/CA-1%20PACK.zip"
+                    url: "http://169.58.57.199/CA-1%20PACK.zip"
                 }
             ]
         },
@@ -1089,7 +1089,7 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 2",
             level: 2,
             images: ["../assets/Ca-Pack.png", "../assets/Ca-2v2.png", "../assets/Ca_Store.png"],
-            url: "http://147.93.156.124/CA-2%20PACK.zip",
+            url: "http://169.58.57.199/CA-2%20PACK.zip",
             versions: [
                 {
                     version: "1.0",
@@ -1098,7 +1098,7 @@ app.get("/api/packs", async (req, res) => {
                     size: "276 MB",
                     features: ["جرافيكس محسّن", "أداء أفضل"],
                     changelog: "الإصدار الأولي مع تحسينات على الجرافيكس",
-                    url: "http://147.93.156.124/CA-2%20PACK.zip"
+                    url: "http://169.58.57.199/CA-2%20PACK.zip"
                 }
             ]
         },
@@ -1108,7 +1108,7 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 3",
             level: 3,
             images: ["../assets/ca333.png", "../assets/ca3.png", "../assets/ca33.png"],
-            url: "http://147.93.156.124/CA-3%20PACK.zip",
+            url: "http://169.58.57.199/CA-3%20PACK.zip",
             versions: [
                 {
                     version: "1.0",
@@ -1117,7 +1117,7 @@ app.get("/api/packs", async (req, res) => {
                     size: "733 MB",
                     features: ["جرافيكس عالي الجودة", "إضاءة محسّنة"],
                     changelog: "الإصدار الأولي مع جرافيكس عالي الجودة",
-                    url: "http://147.93.156.124/CA-3%20PACK.zip"
+                    url: "http://169.58.57.199/CA-3%20PACK.zip"
                 }
             ]
         },
@@ -1127,16 +1127,16 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 4",
             level: 4,
             images: ["../assets/ca444.png", "../assets/ca4.png", "../assets/ca44.png"],
-            url: "http://147.93.156.124/CA-4%20PACK.zip",
+            url: "http://169.58.57.199/CA-4%20PACK.zip",
             versions: [
                 {
-                    version: "1.0.1",
+                    version: "2.0",
                     date: "2026-06-6",
                     latest: true,
                     size: "700 MB",
                     features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
-                    url: "http://147.93.156.124/CA-4-PACK-v1.0.1.zip"
+                    url: "http://169.58.57.199/CA-4-PACK-v1.0.1.zip"
                 },
                 {
                     version: "1.0",
@@ -1145,7 +1145,7 @@ app.get("/api/packs", async (req, res) => {
                     size: "900 MB",
                     features: ["الإصدار الأولي", "جرافيكس فائق"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
-                    url: "http://147.93.156.124/CA-4%20PACK.zip"
+                    url: "http://169.58.57.199/CA-4%20PACK.zip"
                 }
             ]
         },
@@ -1155,7 +1155,7 @@ app.get("/api/packs", async (req, res) => {
             name: "CA - Pack 5",
             level: 5,
             images: ["../assets/CA5.png", "../assets/CA51.png", "../assets/CA52.png"],
-            url: "http://147.93.156.124/CA-5%20PACK.zip",
+            url: "http://169.58.57.199/CA-5%20PACK.zip",
             versions: [
                 {
                     version: "1.0",
@@ -1164,7 +1164,7 @@ app.get("/api/packs", async (req, res) => {
                     size: "5 GB",
                     features: ["جرافيكس فائق الجودة", "أداء محسّن"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
-                    url: "http://147.93.156.124/CA-5%20PACK.zip"
+                    url: "http://169.58.57.199/CA-5%20PACK.zip"
                 }
             ]
         }
@@ -1203,31 +1203,31 @@ const sections = [
                 name: "California Roads",
                 file: "California_Roads.rpf",
                 img: "../assets/California_Roads.png",
-                url: "http://147.93.156.124/California_Roads.rpf"
+                url: "http://169.58.57.199/California_Roads.rpf"
             },
             {
                 name: "Forza Roads",
                 file: "Forza_Roads.rpf",
                 img: "../assets/Forza_Roads.png",
-                url: "http://147.93.156.124/Forza_Roads.rpf"
+                url: "http://169.58.57.199/Forza_Roads.rpf"
             },
             {
                 name: "Monaco Roads",
                 file: "Monaco_Roads.rpf",
                 img: "../assets/Monaco_Roads.png",
-                url: "http://147.93.156.124/Monaco_Roads.rpf"
+                url: "http://169.58.57.199/Monaco_Roads.rpf"
             },
             {
                 name: "San Francisco Roads",
                 file: "SanFrancisco_Roads.rpf",
                 img: "../assets/SanFrancisco_Roads.png",
-                url: "http://147.93.156.124/SanFrancisco_Roads.rpf"
+                url: "http://169.58.57.199/SanFrancisco_Roads.rpf"
              },
              {
                  name: "Red Vegetation",
                 file: "CA_Red_Veget.rpf",
                 img: "../assets/Red.png",
-                url: "http://147.93.156.124/CA_Red_Veget.rpf"
+                url: "http://169.58.57.199/CA_Red_Veget.rpf"
             },
         ]
     },
@@ -1237,9 +1237,9 @@ const sections = [
         icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 7 4s0 5 5 8"/><path d="M12 12c0-5 5-8 5-8s0 5-5 8"/></svg>`,
         requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
         mods: [
-            { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Vegetation.rpf" },
-            { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://147.93.156.124/CA_Extra_Vegetation.rpf" },
-            { name: "Sandy Shores Vegetation", file: "CA_Sandy_Shores_Vegetation.rpf", img: "../assets/Sandy.png", url: "http://147.93.156.124/CA_Sandy_Shores_Vegetation.rpf" }
+            { name: "Vegetation", file: "CA_Vegetation.rpf", img: "../assets/Extra.png", url: "http://169.58.57.199/CA_Vegetation.rpf" },
+            { name: "Extra Vegetation", file: "CA_Extra_Vegetation.rpf", img: "../assets/Extra.png", url: "http://169.58.57.199/CA_Extra_Vegetation.rpf" },
+            { name: "Sandy Shores Vegetation", file: "CA_Sandy_Shores_Vegetation.rpf", img: "../assets/Sandy.png", url: "http://169.58.57.199/CA_Sandy_Shores_Vegetation.rpf" }
         ]
     },
     {
@@ -1248,11 +1248,11 @@ const sections = [
         icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="5" height="5"/><rect x="10" y="3" width="5" height="5"/><rect x="3" y="10" width="5" height="5"/><rect x="10" y="10" width="5" height="5"/></svg>`,
         requiredPlans: ["CA-2", "CA-3", "CA-4", "CA-5"],
         mods: [
-            { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://147.93.156.124/CA_Halloween_Pack.rpf" },
-            { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://147.93.156.124/CA_Christmas_Pack.rpf" },
-            { name: "Weather FOGGY", file: "CA_Foggy.rpf", img: "../assets/Foggy_Deep Weather.jpg", url: "http://147.93.156.124/CA_Foggy.rpf" },
-            { name: "Volumetric Clouds", file: "CA_Volumetric_Clouds.rpf", img: "../assets/vol.png", url: "http://147.93.156.124/CA_Volumetric_Clouds.rpf" },
-            { name: "Snowy Mount Chiliad", file: "CA_Snowy_Mount_Chilliad.rpf", img: "../assets/Mount.png", url: "http://147.93.156.124/CA_Snowy_Mount_Chilliad.rpf" }
+            { name: "Halloween Content Pack", file: "CA_Halloween_Pack.rpf", img: "../assets/Halloween Content Pack.jpg", url: "http://169.58.57.199/CA_Halloween_Pack.rpf" },
+            { name: "Christmas Content Pack", file: "CA_Christmas_Pack.rpf", img: "../assets/Christmas Content Pack.jpg", url: "http://169.58.57.199/CA_Christmas_Pack.rpf" },
+            { name: "Weather FOGGY", file: "CA_Foggy.rpf", img: "../assets/Foggy_Deep Weather.jpg", url: "http://169.58.57.199/CA_Foggy.rpf" },
+            { name: "Volumetric Clouds", file: "CA_Volumetric_Clouds.rpf", img: "../assets/vol.png", url: "http://169.58.57.199/CA_Volumetric_Clouds.rpf" },
+            { name: "Snowy Mount Chiliad", file: "CA_Snowy_Mount_Chilliad.rpf", img: "../assets/Mount.png", url: "http://169.58.57.199/CA_Snowy_Mount_Chilliad.rpf" }
         ]
     }
 ];
@@ -1269,7 +1269,7 @@ app.get("/api/customizations", async (req, res) => {
             description: "إزالة الماء من اللعبة لتحسين الأداء والمظهر",
             file: "water.xml",
             destination: "FiveM/FiveM.app/citizen/common/data/levels/gta5",
-            url: "http://147.93.156.124/water.xml",
+            url: "http://169.58.57.199/water.xml",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>`,
             warning: "قد يؤثر على بعض السيناريوهات التي تعتمد على الماء"
         },
@@ -1279,7 +1279,7 @@ app.get("/api/customizations", async (req, res) => {
             description: "إزالة الثلج من اللعبة لتحسين الأداء",
             file: "weather.xml",
             destination: "FiveM/FiveM.app/citizen/common/data/levels/gta5",
-            url: "http://147.93.156.124/weather.xml",
+            url: "http://169.58.57.199/weather.xml",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 17.58A5 5 0 0 0 18 8h-1.26A8 8 0 1 0 4 16.25"/></svg>`,
             warning: "قد يؤثر على المناخ في بعض السيناريوهات"
         },
@@ -1289,7 +1289,7 @@ app.get("/api/customizations", async (req, res) => {
             description: "إزالة جبل تشيلياد لتحسين الأداء",
             file: "no_mountain.rpf",
             destination: "FiveM/FiveM.app/mods",
-            url: "http://147.93.156.124/no_mountain.rpf",
+            url: "http://169.58.57.199/no_mountain.rpf",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2L2 22h20L12 2z"/></svg>`,
             warning: "قد يؤثر على المظهر الجغرافي للعبة"
         },
@@ -1299,7 +1299,7 @@ app.get("/api/customizations", async (req, res) => {
             description: "إزالة المطر لتحسين الأداء",
             file: "no_rain.rpf",
             destination: "FiveM/FiveM.app/mods",
-            url: "http://147.93.156.124/no_rain.rpf",
+            url: "http://169.58.57.199/no_rain.rpf",
             icon: `<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 16.2A4.5 4.5 0 0 0 17.5 8h-.8a7 7 0 1 0-13.4 0H3a4.5 4.5 0 0 0 0 9h17z"/></svg>`,
             warning: "قد يؤثر على الطقس في بعض السيناريوهات"
         }
