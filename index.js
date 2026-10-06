@@ -1132,7 +1132,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "2.0",
                     date: "2026-06-6",
-                    latest: true,
+                    latest: false,
                     size: "700 MB",
                     features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
@@ -1141,7 +1141,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-05-28",
-                    latest: false,
+                    latest: true,
                     size: "900 MB",
                     features: ["الإصدار الأولي", "جرافيكس فائق"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1157,11 +1157,21 @@ app.get("/api/packs", async (req, res) => {
             images: ["../assets/CA5.png", "../assets/CA51.png", "../assets/CA52.png"],
             url: "http://169.58.57.199/CA-5%20PACK.zip",
             versions: [
+                               {
+                    version: "2.0",
+                    date: "2026-10-6",
+                    latest: false,
+                    size: "1.22 GB",
+                    features: ["تخفيف الحجم", "ألوان أجمل ", "غيوم أفضل "],
+                    changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وتحسين الالوان ",
+                    url: "http://169.58.57.199/CA-5%20PACK.v2.zip"
+                },
+
                 {
                     version: "1.0",
                     date: "2026-06-24",
                     latest: true,
-                    size: "5 GB",
+                    size: "1.35 GB",
                     features: ["جرافيكس فائق الجودة", "أداء محسّن"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
                     url: "http://169.58.57.199/CA-5%20PACK.zip"
