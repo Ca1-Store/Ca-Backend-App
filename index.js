@@ -1331,4 +1331,29 @@ app.get("/api/customizations", async (req, res) => {
     res.json({ success: true, customizations });
 });
 
+/* ============================================================
+   API: مكتبة الفلاتر (ReShade Presets — صيغة .ini فقط)
+   لإضافة فلتر جديد: أضف سطراً جديداً داخل المصفوفة بالدالة P(...)
+   ملف الفلتر يُرفع على السيرفر بجانب بقية الملفات ثم يُكتب اسمه هنا.
+============================================================ */
+const PRESETS_BASE_URL = "http://169.58.57.199/";
+
+// P(الاسم المعروض، اسم الملف .ini، الوصف، رابط الصورة (اختياري)، الحجم (اختياري))
+const P = (name, file, description = "", img = "", size = "") => ({
+    id: file.replace(/\.ini$/i, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    name, file, description, img, size,
+    url: PRESETS_BASE_URL + encodeURIComponent(file)
+});
+
+const PRESETS = [
+    // أمثلة (احذف علامة التعليق بعد رفع الملف على السيرفر):
+    // P("CA - Best 1", "CA - Best 1 - preset.ini", "ألوان حيّة وتباين عالٍ", "../assets/presets/best1.png", "70 KB"),
+    // P("CA - Snow",   "CA - Snow - preset.ini",   "أجواء شتوية باردة",     "../assets/presets/snow.png",  "28 KB"),
+];
+
+app.get("/api/presets", (req, res) => {
+    // نرسل فقط الملفات بصيغة .ini
+    res.json({ success: true, presets: PRESETS.filter(p => /\.ini$/i.test(p.file)) });
+});
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
