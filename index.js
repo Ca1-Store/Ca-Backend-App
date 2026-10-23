@@ -549,30 +549,27 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         });
         const user = await userRes.json();
         const discordId = user.id;
+        if (!discordId) { console.error("❌ web login: Discord user fetch failed:", JSON.stringify(user)); return res.json({ success: false, message: "تعذّر قراءة بيانات حسابك من ديسكورد" }); }
 
-        const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
+        // تسجيل المستخدم وجلسة الموقع: غير حرجين، فشلهما لا يمنع تسجيل الدخول
+        try {
+            const existing = await db.query("SELECT 1 FROM users WHERE discord_id=$1", [discordId]);
+            if (existing.rows.length === 0) await db.query("INSERT INTO users (discord_id, last_login) VALUES ($1,NOW())", [discordId]);
+            else await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
+        } catch (e) { console.error("⚠️ web login: users table error:", e.message); }
 
-        if (existing.rows.length === 0) {
-            await db.query(
-                "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,NULL,NOW())",
-                [discordId]
-            );
-        } else {
-            await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
-        }
+        let plans = null;
+        try { plans = await getPlansFromDiscord(discordId); } catch (e) { console.error("⚠️ web login: roles lookup error:", e.message); }
 
-        const plans = await getPlansFromDiscord(discordId);
-
-        const sessionId = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-        await db.query(
-            "INSERT INTO web_sessions (session_id, discord_id, expires_at) VALUES ($1,$2,$3)",
-            [sessionId, discordId, expiresAt]
-        );
+        let sessionId;
+        try {
+            sessionId = crypto.randomBytes(32).toString('hex');
+            const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+            await db.query("INSERT INTO web_sessions (session_id, discord_id, expires_at) VALUES ($1,$2,$3)", [sessionId, discordId, expiresAt]);
+        } catch (e) { console.error("⚠️ web login: web_sessions error:", e.message); sessionId = undefined; }
 
         const token = jwt.sign(
-            { discordId, sessionId },
+            sessionId ? { discordId, sessionId } : { discordId },
             JWT_SECRET,
             { expiresIn: "30d" }
         );
@@ -587,7 +584,7 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         });
 
     } catch (err) {
-        console.error("❌ Web callback error:", err);
+        console.error("❌ Web callback error:", err && err.message, err && err.stack);
         return res.json({ success: false, message: "خطأ في السيرفر" });
     }
 });
