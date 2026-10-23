@@ -1740,4 +1740,128 @@ app.get("/api/admin/store/stats", requireAdmin, async (req, res) => {
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
+/* ============================================================
+   CHECKOUT — دفع PayPal مرتبط بحساب ديسكورد (Orders API)
+   متغيرات Railway: PAYPAL_CLIENT_ID , PAYPAL_CLIENT_SECRET
+   اختياري: PAYPAL_ENV=sandbox للتجربة
+============================================================ */
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || "";
+const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET || "";
+const PAYPAL_API = process.env.PAYPAL_ENV === "sandbox" ? "https://api-m.sandbox.paypal.com" : "https://api-m.paypal.com";
+const checkoutLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 25, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "محاولات كثيرة، انتظر قليلاً" } });
+
+let _ppToken = { value: null, exp: 0 };
+async function paypalToken() {
+    if (_ppToken.value && Date.now() < _ppToken.exp) return _ppToken.value;
+    const r = await fetch(`${PAYPAL_API}/v1/oauth2/token`, {
+        method: "POST",
+        headers: { Authorization: "Basic " + Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
+        body: "grant_type=client_credentials"
+    });
+    const d = await r.json();
+    if (!d.access_token) { console.error("❌ PayPal token error:", d); throw new Error("paypal_auth"); }
+    _ppToken = { value: d.access_token, exp: Date.now() + Math.max((d.expires_in || 300) - 60, 30) * 1000 };
+    return _ppToken.value;
+}
+async function paypalCall(method, path, body, reqId) {
+    const t = await paypalToken();
+    const headers = { Authorization: `Bearer ${t}`, "Content-Type": "application/json" };
+    if (reqId) headers["PayPal-Request-Id"] = reqId;
+    const r = await fetch(`${PAYPAL_API}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    let d = {}; try { d = await r.json(); } catch {}
+    return { status: r.status, data: d };
+}
+
+let _chkSchema = null;
+function ensureCheckoutSchema() {
+    if (!_chkSchema) _chkSchema = (async () => {
+        await db.query(`ALTER TABLE store_purchases ADD COLUMN IF NOT EXISTS paypal_order_id TEXT`);
+        await db.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_store_purchases_order ON store_purchases(paypal_order_id) WHERE paypal_order_id IS NOT NULL`);
+    })().catch(e => { _chkSchema = null; throw e; });
+    return _chkSchema;
+}
+
+// هل الدفع التلقائي مفعّل؟ (الموقع يستخدمه ليقرر الطريقة)
+app.get("/api/store/checkout/status", (req, res) => res.json({ success: true, enabled: !!(PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET) }));
+
+// إنشاء طلب دفع وإرجاع رابط PayPal
+app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res) => {
+    if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
+    try {
+        const productId = parseInt(req.body.productId, 10);
+        const pr = productId ? await db.query("SELECT * FROM store_products WHERE id=$1", [productId]) : { rows: [] };
+        const p = pr.rows[0];
+        if (!p || p.status !== "available") return res.json({ success: false, message: "المنتج غير متوفر حالياً" });
+        if (p.is_support) return res.json({ success: false, message: "منتج الدعم يتم عبر رابطه المباشر" });
+        const price = Number(p.price);
+        if (!(price > 0)) return res.json({ success: false, message: "سعر المنتج غير صالح" });
+
+        const site = WEBSITE_URL.replace(/\/+$/, "");
+        const order = await paypalCall("POST", "/v2/checkout/orders", {
+            intent: "CAPTURE",
+            purchase_units: [{
+                reference_id: `p${p.id}`,
+                custom_id: `d=${req.user.discordId}&p=${p.id}`,
+                description: String(p.title).slice(0, 120),
+                amount: { currency_code: "USD", value: price.toFixed(2) }
+            }],
+            payment_source: { paypal: { experience_context: {
+                brand_name: "CA Store", user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING", landing_page: "LOGIN",
+                return_url: `${site}/checkout-return.html`, cancel_url: `${site}/product.html?id=${p.id}`
+            } } }
+        }, crypto.randomBytes(16).toString("hex"));
+
+        const link = (order.data.links || []).find(l => l.rel === "payer-action") || (order.data.links || []).find(l => l.rel === "approve");
+        if (!link) { console.error("❌ PayPal create order failed:", JSON.stringify(order.data)); return res.json({ success: false, message: "تعذّر بدء الدفع، حاول لاحقاً" }); }
+        res.json({ success: true, url: link.href, orderId: order.data.id });
+    } catch (err) { console.error("checkout error:", err); res.status(500).json({ success: false, message: "تعذّر بدء الدفع" }); }
+});
+
+// بعد رجوع العميل من PayPal: التقاط الدفعة ثم تسجيل الشراء وإعطاء الرتبة
+app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (req, res) => {
+    if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
+    try {
+        await ensureCheckoutSchema();
+        const orderId = String(req.body.orderId || "").trim();
+        if (!/^[A-Za-z0-9\-]{8,40}$/.test(orderId)) return res.json({ success: false, message: "رقم الطلب غير صالح" });
+
+        const got = await paypalCall("GET", `/v2/checkout/orders/${orderId}`);
+        if (got.status !== 200) return res.json({ success: false, message: "لم يتم العثور على الطلب" });
+        let order = got.data;
+        const unit = (order.purchase_units || [])[0] || {};
+        const cm = new URLSearchParams(unit.custom_id || "");
+        if (cm.get("d") !== req.user.discordId) return res.status(403).json({ success: false, message: "هذا الطلب لا يخص حسابك" });
+        const productId = parseInt(cm.get("p"), 10);
+
+        if (order.status === "APPROVED") {
+            const cap = await paypalCall("POST", `/v2/checkout/orders/${orderId}/capture`, undefined, "cap-" + orderId);
+            if (cap.status >= 400 && !(cap.data && cap.data.status === "COMPLETED")) { console.error("❌ capture failed:", JSON.stringify(cap.data)); return res.json({ success: false, message: "فشل إتمام الدفع" }); }
+            order = cap.data.status ? cap.data : order;
+            const again = await paypalCall("GET", `/v2/checkout/orders/${orderId}`); if (again.status === 200) order = again.data;
+        }
+        if (order.status !== "COMPLETED") return res.json({ success: false, pending: order.status !== "VOIDED", message: order.status === "CREATED" ? "لم يتم تأكيد الدفع في PayPal بعد" : "لم يكتمل الدفع" });
+
+        const capture = (((order.purchase_units || [])[0] || {}).payments || {}).captures;
+        const amount = capture && capture[0] ? capture[0].amount.value : (unit.amount || {}).value;
+        const pr = await db.query("SELECT * FROM store_products WHERE id=$1", [productId]);
+        const p = pr.rows[0];
+        const plan = p && p.plan ? p.plan : null;
+
+        const ins = await db.query(
+            `INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source, paypal_order_id)
+             VALUES ($1,$2,$3,$4,'PayPal','checkout',$5) ON CONFLICT (paypal_order_id) WHERE paypal_order_id IS NOT NULL DO NOTHING RETURNING id`,
+            [req.user.discordId, p ? p.id : null, plan, amount == null ? null : String(amount), orderId]);
+
+        let delivered = null;
+        if (ins.rows.length) {           // أول مرة نعالج هذا الطلب
+            if (plan) {
+                delivered = await grantRoleToUser(req.user.discordId, plan);
+                if (delivered) await sendDMToUser(req.user.discordId, plan);
+            }
+            await sendLogToDiscord(req.user.discordId, plan || (p ? p.title : "منتج"), amount, "PayPal (موقع)");
+        }
+        res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
+    } catch (err) { console.error("capture error:", err); res.status(500).json({ success: false, message: "تعذّر تأكيد الدفع، تواصل معنا وسنؤكده يدوياً" }); }
+});
+
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
