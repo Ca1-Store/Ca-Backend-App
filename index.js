@@ -5,10 +5,11 @@ const rateLimit = require("express-rate-limit");
 const cors = require("cors");
 const crypto = require("crypto");
 
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+// Node 18+ فيه fetch مدمج، ويرجع لـ node-fetch فقط إذا كان Node قديماً
+const fetch = (...args) => (typeof globalThis.fetch === "function" ? globalThis.fetch(...args) : import("node-fetch").then(({ default: f }) => f(...args)));
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1);
 app.use(express.json());
 
 // CORS Configuration
@@ -549,30 +550,27 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         });
         const user = await userRes.json();
         const discordId = user.id;
+        if (!discordId) { console.error("❌ web login: Discord user fetch failed:", JSON.stringify(user)); return res.json({ success: false, message: "تعذّر قراءة بيانات حسابك من ديسكورد" }); }
 
-        const existing = await db.query("SELECT * FROM users WHERE discord_id=$1", [discordId]);
+        // تسجيل المستخدم وجلسة الموقع: غير حرجين، فشلهما لا يمنع تسجيل الدخول
+        try {
+            const existing = await db.query("SELECT 1 FROM users WHERE discord_id=$1", [discordId]);
+            if (existing.rows.length === 0) await db.query("INSERT INTO users (discord_id, last_login) VALUES ($1,NOW())", [discordId]);
+            else await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
+        } catch (e) { console.error("⚠️ web login: users table error:", e.message); }
 
-        if (existing.rows.length === 0) {
-            await db.query(
-                "INSERT INTO users (discord_id, hwid, last_login) VALUES ($1,NULL,NOW())",
-                [discordId]
-            );
-        } else {
-            await db.query("UPDATE users SET last_login=NOW() WHERE discord_id=$1", [discordId]);
-        }
+        let plans = null;
+        try { plans = await getPlansFromDiscord(discordId); } catch (e) { console.error("⚠️ web login: roles lookup error:", e.message); }
 
-        const plans = await getPlansFromDiscord(discordId);
-
-        const sessionId = crypto.randomBytes(32).toString('hex');
-        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-        await db.query(
-            "INSERT INTO web_sessions (session_id, discord_id, expires_at) VALUES ($1,$2,$3)",
-            [sessionId, discordId, expiresAt]
-        );
+        let sessionId;
+        try {
+            sessionId = crypto.randomBytes(32).toString('hex');
+            const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+            await db.query("INSERT INTO web_sessions (session_id, discord_id, expires_at) VALUES ($1,$2,$3)", [sessionId, discordId, expiresAt]);
+        } catch (e) { console.error("⚠️ web login: web_sessions error:", e.message); sessionId = undefined; }
 
         const token = jwt.sign(
-            { discordId, sessionId },
+            sessionId ? { discordId, sessionId } : { discordId },
             JWT_SECRET,
             { expiresIn: "30d" }
         );
@@ -587,7 +585,7 @@ app.post("/auth/web/callback", authLimiter, async (req, res) => {
         });
 
     } catch (err) {
-        console.error("❌ Web callback error:", err);
+        console.error("❌ Web callback error:", err && err.message, err && err.stack);
         return res.json({ success: false, message: "خطأ في السيرفر" });
     }
 });
@@ -1117,12 +1115,22 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-05-25",
-                    latest: true,
+                    latest: false,
                     size: "733 MB",
                     features: ["جرافيكس عالي الجودة", "إضاءة محسّنة"],
                     changelog: "الإصدار الأولي مع جرافيكس عالي الجودة",
                     url: "http://169.58.57.199/CA-3%20PACK.zip"
+                },
+                {
+                                    version: "2.0",
+                    date: "2026-10-23",
+                    latest: true,
+                    size: "729 MB",
+                    features: ["تحسين الألوان ", "تحسين الشوارع", "تحسين الغيوم"],
+                    changelog: "تغييرات بالغيوم وبالسماء وبالالوان لنقل الجرافيكس لجودة أجمل",
+                    url: "http://169.58.57.199/CA-3-PACK.v2.zip"
                 }
+
             ]
         },
         {
@@ -1136,7 +1144,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "2.0",
                     date: "2026-06-6",
-                    latest: false,
+                    latest: true,
                     size: "700 MB",
                     features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
@@ -1145,7 +1153,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-05-28",
-                    latest: true,
+                    latest: false,
                     size: "900 MB",
                     features: ["الإصدار الأولي", "جرافيكس فائق"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1164,7 +1172,7 @@ app.get("/api/packs", async (req, res) => {
                                {
                     version: "2.0",
                     date: "2026-10-6",
-                    latest: false,
+                    latest: true,
                     size: "1.22 GB",
                     features: ["تخفيف الحجم", "ألوان أجمل ", "غيوم أفضل "],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وتحسين الالوان ",
@@ -1174,7 +1182,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-06-24",
-                    latest: true,
+                    latest: false,
                     size: "1.35 GB",
                     features: ["جرافيكس فائق الجودة", "أداء محسّن"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1806,7 +1814,7 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
                 amount: { currency_code: "USD", value: price.toFixed(2) }
             }],
             payment_source: { paypal: { experience_context: {
-                brand_name: "CA Store", user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING", landing_page: "LOGIN",
+                brand_name: "CA Store", user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING", landing_page: "GUEST_CHECKOUT",
                 return_url: `${site}/checkout-return.html`, cancel_url: `${site}/product.html?id=${p.id}`
             } } }
         }, crypto.randomBytes(16).toString("hex"));
