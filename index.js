@@ -5,10 +5,11 @@ const rateLimit = require("express-rate-limit");
 const cors = require("cors");
 const crypto = require("crypto");
 
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+// Node 18+ فيه fetch مدمج، ويرجع لـ node-fetch فقط إذا كان Node قديماً
+const fetch = (...args) => (typeof globalThis.fetch === "function" ? globalThis.fetch(...args) : import("node-fetch").then(({ default: f }) => f(...args)));
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1);
 app.use(express.json());
 
 // CORS Configuration
