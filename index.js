@@ -1804,7 +1804,7 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
                 amount: { currency_code: "USD", value: price.toFixed(2) }
             }],
             payment_source: { paypal: { experience_context: {
-                brand_name: "CA Store", user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING", landing_page: "LOGIN",
+                brand_name: "CA Store", user_action: "PAY_NOW", shipping_preference: "NO_SHIPPING", landing_page: "GUEST_CHECKOUT",
                 return_url: `${site}/checkout-return.html`, cancel_url: `${site}/product.html?id=${p.id}`
             } } }
         }, crypto.randomBytes(16).toString("hex"));
