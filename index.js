@@ -1130,7 +1130,6 @@ app.get("/api/packs", async (req, res) => {
                     changelog: "تغييرات بالغيوم وبالسماء وبالالوان لنقل الجرافيكس لجودة أجمل",
                     url: "http://169.58.57.199/CA-3-PACK.v2.zip"
                 }
-
             ]
         },
         {
@@ -1144,7 +1143,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "2.0",
                     date: "2026-06-6",
-                    latest: true,
+                    latest: false,
                     size: "700 MB",
                     features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
@@ -1153,7 +1152,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-05-28",
-                    latest: false,
+                    latest: true,
                     size: "900 MB",
                     features: ["الإصدار الأولي", "جرافيكس فائق"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1172,7 +1171,7 @@ app.get("/api/packs", async (req, res) => {
                                {
                     version: "2.0",
                     date: "2026-10-6",
-                    latest: true,
+                    latest: false,
                     size: "1.22 GB",
                     features: ["تخفيف الحجم", "ألوان أجمل ", "غيوم أفضل "],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وتحسين الالوان ",
@@ -1182,7 +1181,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-06-24",
-                    latest: false,
+                    latest: true,
                     size: "1.35 GB",
                     features: ["جرافيكس فائق الجودة", "أداء محسّن"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1376,7 +1375,22 @@ app.get("/api/presets", (req, res) => {
    • التقييم مسموح فقط لمن اشترى المنتج (رتبة الباك في ديسكورد أو سجل شراء).
 ============================================================ */
 const STORE_ADMIN_IDS = [ADMIN_DISCORD_ID, ...(process.env.STORE_ADMIN_IDS || "").split(",").map(s => s.trim()).filter(Boolean)];
-const isStoreAdmin = (id) => !!id && STORE_ADMIN_IDS.includes(String(id));
+const ALL_PERMS = ["products", "reviews", "purchases", "coupons", "settings"];
+const MAIN_ADMIN_ID = String(ADMIN_DISCORD_ID || "");
+const adminCache = new Map();
+async function loadStoreAdmins() {
+    const r = await db.query("SELECT discord_id, perms FROM store_admins");
+    adminCache.clear(); r.rows.forEach(x => adminCache.set(String(x.discord_id), x.perms || []));
+}
+const isMainAdmin = (id) => !!id && !!MAIN_ADMIN_ID && String(id) === MAIN_ADMIN_ID;
+function getPerms(id) {
+    id = String(id || ""); if (!id) return [];
+    if (isMainAdmin(id) || STORE_ADMIN_IDS.includes(id)) return [...ALL_PERMS];
+    return adminCache.get(id) || [];
+}
+const isStoreAdmin = (id) => getPerms(id).length > 0;
+const hasPerm = (id, p) => getPerms(id).includes(p);
+
 
 const storeReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "طلبات كثيرة" } });
 const storeReviewLimiter = rateLimit({ windowMs: 60 * 1000, max: 8, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "محاولات كثيرة، انتظر قليلاً" } });
@@ -1453,26 +1467,89 @@ const STORE_SEED = [
             await db.query("SELECT setval(pg_get_serial_sequence('store_products','id'), (SELECT MAX(id) FROM store_products))");
             console.log("✅ Store products seeded");
         }
+        /* ── v2: عروض / مبيعات / وسائط / كوبونات / صلاحيات / سجل ── */
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS title_en TEXT NOT NULL DEFAULT ''`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS description_en TEXT NOT NULL DEFAULT ''`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS offer_ends_at TIMESTAMPTZ`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS sold_base INTEGER NOT NULL DEFAULT 0`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '{}'::jsonb`);
+        await db.query(`ALTER TABLE store_purchases ADD COLUMN IF NOT EXISTS coupon_code TEXT`);
+        await db.query(`ALTER TABLE store_purchases ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2)`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_coupons (
+            id SERIAL PRIMARY KEY, code TEXT UNIQUE NOT NULL, type TEXT NOT NULL, value NUMERIC(10,2) NOT NULL,
+            max_uses INTEGER, used INTEGER NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ, product_ids INTEGER[],
+            active BOOLEAN NOT NULL DEFAULT TRUE, note TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT NOW())`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_audit (
+            id SERIAL PRIMARY KEY, actor_id TEXT, actor_name TEXT, action TEXT, target TEXT, detail TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_admins (
+            discord_id TEXT PRIMARY KEY, perms TEXT[] NOT NULL DEFAULT '{}', added_by TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+        const seeded = await db.query("SELECT 1 FROM store_settings WHERE key='base_seeded'");
+        if (!seeded.rows.length) {      // أرقام المبيعات السابقة (قبل الموقع الجديد) — تُضبط مرة واحدة فقط
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('customers_base','113') ON CONFLICT (key) DO NOTHING");
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('base_since', NOW()::text) ON CONFLICT (key) DO NOTHING");
+            for (const [plan, n] of [["CA-1", 29], ["CA-2", 26], ["CA-3", 25], ["CA-4", 26], ["CA-5", 7]])
+                await db.query("UPDATE store_products SET sold_base=$1 WHERE plan=$2", [n, plan]);
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('base_seeded','1') ON CONFLICT (key) DO NOTHING");
+        }
+        await loadStoreAdmins();
     } catch (err) { console.error("Store init error:", err); }
 })();
 
 /* ── helpers ── */
 const PRODUCT_STATUSES = ["available", "out", "hidden"];
 
+const offerActive = (r) => !!(r.offer_ends_at && new Date(r.offer_ends_at) > new Date());
+// بعد انتهاء العرض يعود السعر تلقائياً للسعر القديم (الأصلي)
+const effPrice = (r) => (r.offer_ends_at && !offerActive(r) && r.old_price != null) ? Number(r.old_price) : Number(r.price);
+const round2 = (n) => Math.round(n * 100) / 100;
+
 function productRow(r) {
+    const act = offerActive(r), expired = !!r.offer_ends_at && !act;
     return {
-        id: r.id, title: r.title, description: r.description,
-        price: Number(r.price), oldPrice: r.old_price == null ? null : Number(r.old_price),
+        id: r.id, title: r.title, titleEn: r.title_en || "", description: r.description, descriptionEn: r.description_en || "",
+        price: effPrice(r), oldPrice: expired || r.old_price == null ? null : Number(r.old_price),
+        offerEndsAt: act ? new Date(r.offer_ends_at).toISOString() : null,
         image: r.image, category: r.category, status: r.status, plan: r.plan,
         paymentUrl: r.status === "available" ? r.payment_url : null,
         isSupport: r.is_support, featured: r.featured, sortOrder: r.sort_order,
+        sold: Number(r.sold || 0), media: r.media && typeof r.media === "object" ? r.media : {},
         rating: { avg: r.avg == null ? 0 : Number(Number(r.avg).toFixed(1)), count: r.cnt == null ? 0 : Number(r.cnt) },
         createdAt: r.created_at
     };
 }
 const PRODUCT_SELECT = `
-    SELECT p.*, r.avg, r.cnt FROM store_products p
-    LEFT JOIN (SELECT product_id, AVG(rating) AS avg, COUNT(*) AS cnt FROM store_reviews GROUP BY product_id) r ON r.product_id = p.id`;
+    SELECT p.*, r.avg, r.cnt, (p.sold_base + COALESCE(sp.c, 0))::int AS sold FROM store_products p
+    LEFT JOIN (SELECT product_id, AVG(rating) AS avg, COUNT(*) AS cnt FROM store_reviews GROUP BY product_id) r ON r.product_id = p.id
+    LEFT JOIN (SELECT product_id, COUNT(*) AS c FROM store_purchases
+               WHERE created_at >= COALESCE((SELECT value::timestamp FROM store_settings WHERE key='base_since'), 'epoch'::timestamp)
+               GROUP BY product_id) sp ON sp.product_id = p.id`;
+
+/* وسائط المنتج: معرض صور/فيديو + صور قبل/بعد */
+function mediaItem(u) {
+    u = String(u || "").trim(); if (!u || u.length > 500) return null;
+    const y = u.match(/^https:\/\/(?:www\.)?(?:youtube\.com\/watch\?(?:[^#\s]*&)?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/i);
+    if (y) return { type: "youtube", url: y[1] };
+    if (/^https:\/\/[^\s"'<>]+$/.test(u) || /^[\w\-. ()]+\.(png|jpe?g|webp|gif|avif|mp4|webm)$/i.test(u))
+        return { type: /\.(mp4|webm)(\?.*)?$/i.test(u) ? "video" : "image", url: u };
+    return null;
+}
+function cleanMedia(m) {
+    m = m && typeof m === "object" ? m : {};
+    const gallery = [];
+    for (const x of (Array.isArray(m.gallery) ? m.gallery : []).slice(0, 12)) {
+        const it = mediaItem(typeof x === "string" ? x : x && x.url);
+        if (!it) return { error: "رابط وسائط غير صالح في المعرض: " + String(typeof x === "string" ? x : x && x.url).slice(0, 60) };
+        gallery.push(it);
+    }
+    const compare = [];
+    for (const c of (Array.isArray(m.compare) ? m.compare : []).slice(0, 6)) {
+        const b = mediaItem(c && c.before), a = mediaItem(c && c.after);
+        if (!b || !a || b.type !== "image" || a.type !== "image") return { error: "صورة قبل/بعد غير صالحة (يجب أن تكون صورة)" };
+        compare.push({ before: b.url, after: a.url, label: String((c && c.label) || "").slice(0, 60) });
+    }
+    return { value: { gallery, compare } };
+}
 
 function reviewRow(r) {
     return {
@@ -1502,10 +1579,15 @@ function authUser(required) {
         }
     };
 }
-const requireAdmin = [storeAdminLimiter, authUser(true), (req, res, next) => {
-    if (!isStoreAdmin(req.user.discordId)) return res.status(403).json({ success: false, message: "غير مصرح" });
-    next();
-}];
+function adminGuard(perm) {
+    return [storeAdminLimiter, authUser(true), (req, res, next) => {
+        const id = req.user.discordId;
+        const ok = perm === "main" ? isMainAdmin(id) : perm === "any" ? isStoreAdmin(id) : hasPerm(id, perm);
+        if (!ok) return res.status(403).json({ success: false, message: "غير مصرح" });
+        next();
+    }];
+}
+const requireAdmin = adminGuard("any");
 
 async function fetchDiscordProfile(discordId) {
     try {
@@ -1561,6 +1643,15 @@ function cleanProduct(b, partial = false) {
             out.payment_url = parsed.toString().length > 600 ? null : parsed.toString();
         } else out.payment_url = null;
     }
+    if (!partial || b.titleEn !== undefined) out.title_en = str(b.titleEn).slice(0, 160);
+    if (!partial || b.descriptionEn !== undefined) out.description_en = typeof b.descriptionEn === "string" ? b.descriptionEn.slice(0, 8000) : "";
+    if (!partial || b.offerEndsAt !== undefined) {
+        const v = b.offerEndsAt;
+        if (v === null || v === "" || v === undefined) out.offer_ends_at = null;
+        else { const d = new Date(v); if (isNaN(d.getTime())) return { error: "تاريخ نهاية العرض غير صالح" }; out.offer_ends_at = d.toISOString(); }
+    }
+    if (!partial || b.soldBase !== undefined) { const n = parseInt(b.soldBase, 10); out.sold_base = isFinite(n) && n >= 0 && n <= 1000000 ? n : 0; }
+    if (!partial || b.media !== undefined) { const m = cleanMedia(b.media); if (m.error) return m; out.media = JSON.stringify(m.value); }
     return { value: out };
 }
 
@@ -1570,13 +1661,6 @@ app.get("/api/store/products", storeReadLimiter, async (req, res) => {
         const r = await db.query(`${PRODUCT_SELECT} WHERE p.status <> 'hidden' ORDER BY p.sort_order ASC, p.id ASC`);
         res.json({ success: true, products: r.rows.map(productRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ في جلب المنتجات" }); }
-});
-
-app.get("/api/store/me", storeReadLimiter, authUser(true), async (req, res) => {
-    const prof = await fetchDiscordProfile(req.user.discordId);
-    let plans = [];
-    try { plans = (await getPlansFromDiscord(req.user.discordId)) || []; } catch {}
-    res.json({ success: true, discordId: req.user.discordId, username: prof.username, avatar: prof.avatar, plans, isAdmin: isStoreAdmin(req.user.discordId) });
 });
 
 app.get("/api/store/reviews", storeReadLimiter, async (req, res) => {
@@ -1600,7 +1684,7 @@ app.get("/api/store/products/:id/reviews", storeReadLimiter, authUser(false), as
         rv.rows.forEach(x => { dist[x.rating - 1]++; sum += x.rating; });
         const me = { loggedIn: !!req.user, isAdmin: false, canReview: false, myReview: null, reason: req.user ? "" : "login" };
         if (req.user) {
-            me.isAdmin = isStoreAdmin(req.user.discordId);
+            me.isAdmin = hasPerm(req.user.discordId, "reviews");
             const mine = rv.rows.find(x => x.discord_id === req.user.discordId);
             me.myReview = mine ? { id: mine.id, rating: mine.rating, comment: mine.comment } : null;
             me.canReview = await userOwnsProduct(req.user.discordId, pr.rows[0]);
@@ -1629,11 +1713,13 @@ app.post("/api/store/reviews", storeReviewLimiter, authUser(true), async (req, r
             return res.status(403).json({ success: false, message: "التقييم متاح فقط لمن اشترى هذا المنتج" });
         }
         const prof = await fetchDiscordProfile(req.user.discordId);
+        const prev = await db.query("SELECT 1 FROM store_reviews WHERE product_id=$1 AND discord_id=$2", [productId, req.user.discordId]);
         await db.query(
             `INSERT INTO store_reviews (product_id, discord_id, username, avatar, rating, comment)
              VALUES ($1,$2,$3,$4,$5,$6)
              ON CONFLICT (product_id, discord_id) DO UPDATE SET rating=EXCLUDED.rating, comment=EXCLUDED.comment, username=EXCLUDED.username, avatar=EXCLUDED.avatar, created_at=NOW()`,
             [productId, req.user.discordId, prof.username, prof.avatar, rating, comment]);
+        notifyStore(reviewEmbed({ isUpdate: prev.rows.length > 0, product: pr.rows[0], rating, comment, userId: req.user.discordId, username: prof.username, avatar: prof.avatar }));
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر إرسال التقييم" }); }
 });
@@ -1641,24 +1727,103 @@ app.post("/api/store/reviews", storeReviewLimiter, authUser(true), async (req, r
 app.delete("/api/store/reviews/:id", storeReviewLimiter, authUser(true), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
-        const r = await db.query("SELECT * FROM store_reviews WHERE id=$1", [id]);
+        const r = await db.query("SELECT v.*, p.title AS product_title FROM store_reviews v LEFT JOIN store_products p ON p.id=v.product_id WHERE v.id=$1", [id]);
         if (!r.rows.length) return res.json({ success: false, message: "التقييم غير موجود" });
-        if (r.rows[0].discord_id !== req.user.discordId && !isStoreAdmin(req.user.discordId)) return res.status(403).json({ success: false, message: "غير مصرح" });
+        const own = r.rows[0].discord_id === req.user.discordId;
+        if (!own && !hasPerm(req.user.discordId, "reviews")) return res.status(403).json({ success: false, message: "غير مصرح" });
         await db.query("DELETE FROM store_reviews WHERE id=$1", [id]);
+        if (!own) await audit(req, "حذف تقييم", r.rows[0].product_title || r.rows[0].product_id, `${r.rows[0].username} (${r.rows[0].rating}★): ${String(r.rows[0].comment).slice(0, 120)}`);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
 });
 
+/* ── إشعارات ديسكورد (تقييمات + مبيعات الموقع) ── */
+const STORE_NOTIFY_CHANNEL_ID = process.env.STORE_NOTIFY_CHANNEL_ID || "1480229260466852092";
+async function notifyStore(embed) {
+    try {
+        if (!STORE_NOTIFY_CHANNEL_ID || !DISCORD_BOT_TOKEN) return;
+        const r = await fetch(`https://discord.com/api/v10/channels/${STORE_NOTIFY_CHANNEL_ID}/messages`, {
+            method: "POST",
+            headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } })
+        });
+        if (r && r.ok === false) console.error("⚠️ store notify failed:", r.status);
+    } catch (e) { console.error("⚠️ store notify error:", e.message); }
+}
+const clean = (s, n) => String(s || "").replace(/`/g, "'").slice(0, n);
+const starsTxt = (n) => "★".repeat(n) + "☆".repeat(5 - n);
+function reviewEmbed({ isUpdate, product, rating, comment, userId, username, avatar }) {
+    return {
+        title: isUpdate ? "✏️ تعديل تقييم" : "⭐ تقييم جديد",
+        url: `${WEBSITE_URL}/product.html?id=${product.id}`,
+        color: 0xF5B84A,
+        description: comment ? "> " + clean(comment, 900).replace(/\n+/g, "\n> ") : "*بدون تعليق*",
+        fields: [
+            { name: "المنتج", value: clean(product.title, 200) || "—", inline: false },
+            { name: "التقييم", value: `${starsTxt(rating)}  **${rating}/5**`, inline: true },
+            { name: "العميل", value: `<@${userId}>\n\`${clean(username, 60)}\``, inline: true }
+        ],
+        thumbnail: avatar ? { url: avatar } : undefined,
+        footer: { text: "CA Store • التقييمات" },
+        timestamp: new Date().toISOString()
+    };
+}
+function purchaseEmbed({ product, amount, userId, username, avatar, couponCode, discount, plan, roleGranted, sold }) {
+    const sar = Math.ceil(Number(amount) * 3.75 / 5) * 5;
+    const fields = [
+        { name: "المنتج", value: clean(product.title, 200) || "—", inline: false },
+        { name: "المبلغ", value: `**$${Number(amount).toFixed(2)}**  (≈ ${sar} ر.س)`, inline: true },
+        { name: "العميل", value: `<@${userId}>\n\`${clean(username, 60)}\``, inline: true }
+    ];
+    if (couponCode) fields.push({ name: "كود الخصم", value: `\`${clean(couponCode, 24)}\`${discount ? `  (−$${Number(discount).toFixed(2)})` : ""}`, inline: true });
+    if (plan) fields.push({ name: "الرتبة", value: roleGranted ? `✅ ${plan} — تم منحها تلقائياً` : `⚠️ ${plan} — تعذّر منحها، تحقق يدوياً`, inline: true });
+    fields.push({ name: "إجمالي مبيعات المنتج", value: String(sold ?? "—"), inline: true });
+    return {
+        title: "🛒 عملية شراء جديدة من الموقع",
+        url: `${WEBSITE_URL}/product.html?id=${product.id}`,
+        color: roleGranted === false ? 0xF5B84A : 0x3DDC97,
+        fields, thumbnail: avatar ? { url: avatar } : undefined,
+        footer: { text: "CA Store • المبيعات" }, timestamp: new Date().toISOString()
+    };
+}
+
+/* ── سجل العمليات ── */
+const _nameCache = new Map();
+async function actorName(id) {
+    if (_nameCache.has(id)) return _nameCache.get(id);
+    const p = await fetchDiscordProfile(id); _nameCache.set(id, p.username); return p.username;
+}
+async function audit(req, action, target, detail) {
+    try {
+        const id = req.user.discordId;
+        await db.query("INSERT INTO store_audit (actor_id, actor_name, action, target, detail) VALUES ($1,$2,$3,$4,$5)",
+            [id, await actorName(id), action, String(target || "").slice(0, 200), String(detail || "").slice(0, 1000)]);
+    } catch (e) { console.error("audit error:", e.message); }
+}
+const AUDIT_LABELS = { title: "الاسم", price: "السعر", old_price: "السعر القديم", status: "الحالة", payment_url: "رابط الدفع", offer_ends_at: "نهاية العرض", sold_base: "المبيعات الأساسية", featured: "مميّز", category: "التصنيف", plan: "النسخة", image: "الصورة", description: "الوصف", title_en: "الاسم EN", description_en: "الوصف EN", media: "الوسائط", is_support: "دعم", sort_order: "الترتيب" };
+function diffText(cur, v) {
+    const norm = (k, x) => x == null ? "" : x instanceof Date ? x.toISOString() : (k === "price" || k === "old_price") ? String(Number(x)) : typeof x === "object" ? JSON.stringify(x) : String(x);
+    const show = ["title", "price", "old_price", "status", "offer_ends_at", "sold_base", "category", "plan", "featured"];
+    const out = [];
+    for (const k of Object.keys(v)) {
+        const a = norm(k, cur[k]), b = norm(k, v[k]);
+        if (a === b) continue;
+        out.push(show.includes(k) ? `${AUDIT_LABELS[k] || k}: ${a || "—"} ← ${b || "—"}` : `${AUDIT_LABELS[k] || k} (تغيّر)`);
+    }
+    return out.join(" | ");
+}
+
 /* ── ADMIN ── */
-app.get("/api/admin/store/products", requireAdmin, async (req, res) => {
+const adminProductRow = (x) => ({ ...productRow(x), paymentUrl: x.payment_url, rawPrice: Number(x.price), rawOldPrice: x.old_price == null ? null : Number(x.old_price), rawOfferEndsAt: x.offer_ends_at ? new Date(x.offer_ends_at).toISOString() : null, offerExpired: !!x.offer_ends_at && !offerActive(x), soldBase: x.sold_base });
+
+app.get("/api/admin/store/products", adminGuard("products"), async (req, res) => {
     try {
         const r = await db.query(`${PRODUCT_SELECT} ORDER BY p.sort_order ASC, p.id ASC`);
-        // الأدمن يرى رابط الدفع دائماً حتى للمنتجات غير المتوفرة
-        res.json({ success: true, products: r.rows.map(x => ({ ...productRow(x), paymentUrl: x.payment_url })) });
+        res.json({ success: true, products: r.rows.map(adminProductRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-app.post("/api/admin/store/products", requireAdmin, async (req, res) => {
+app.post("/api/admin/store/products", adminGuard("products"), async (req, res) => {
     try {
         const c = cleanProduct(req.body);
         if (c.error) return res.json({ success: false, message: c.error });
@@ -1667,14 +1832,15 @@ app.post("/api/admin/store/products", requireAdmin, async (req, res) => {
         const next = await db.query("SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM store_products");
         if (req.body.sortOrder === undefined || req.body.sortOrder === "") v.sort_order = next.rows[0].n;
         const r = await db.query(
-            `INSERT INTO store_products (title,description,price,old_price,image,category,status,plan,payment_url,is_support,featured,sort_order)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-            [v.title, v.description, v.price, v.old_price, v.image, v.category, v.status, v.plan, v.payment_url, v.is_support, v.featured, v.sort_order]);
+            `INSERT INTO store_products (title,description,price,old_price,image,category,status,plan,payment_url,is_support,featured,sort_order,title_en,description_en,offer_ends_at,sold_base,media)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+            [v.title, v.description, v.price, v.old_price, v.image, v.category, v.status, v.plan, v.payment_url, v.is_support, v.featured, v.sort_order, v.title_en, v.description_en, v.offer_ends_at, v.sold_base, v.media]);
+        await audit(req, "إضافة منتج", v.title, `السعر $${v.price} — الحالة: ${v.status}`);
         res.json({ success: true, id: r.rows[0].id });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر إضافة المنتج" }); }
 });
 
-app.put("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
+app.put("/api/admin/store/products/:id", adminGuard("products"), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
         const cur = await db.query("SELECT * FROM store_products WHERE id=$1", [id]);
@@ -1687,64 +1853,183 @@ app.put("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
         if (finalStatus === "available" && !finalUrl) return res.json({ success: false, message: "رابط الدفع مطلوب للمنتج المتوفر" });
         const keys = Object.keys(v);
         if (!keys.length) return res.json({ success: true });
+        const diff = diffText(cur.rows[0], v);
         const sets = keys.map((k, i) => `${k}=$${i + 1}`).join(", ");
         await db.query(`UPDATE store_products SET ${sets}, updated_at=NOW() WHERE id=$${keys.length + 1}`, [...keys.map(k => v[k]), id]);
+        if (diff && !(keys.length === 1 && keys[0] === "sort_order")) await audit(req, "تعديل منتج", cur.rows[0].title, diff);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر تعديل المنتج" }); }
 });
 
-app.delete("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
+app.delete("/api/admin/store/products/:id", adminGuard("products"), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
+        const cur = await db.query("SELECT title FROM store_products WHERE id=$1", [id]);
         await db.query("DELETE FROM store_reviews WHERE product_id=$1", [id]);
         await db.query("UPDATE store_purchases SET product_id=NULL WHERE product_id=$1", [id]);
         const r = await db.query("DELETE FROM store_products WHERE id=$1", [id]);
+        if (r.rowCount) await audit(req, "حذف منتج", cur.rows[0] ? cur.rows[0].title : id, "");
         res.json({ success: r.rowCount > 0, message: r.rowCount ? undefined : "المنتج غير موجود" });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر حذف المنتج" }); }
 });
 
-app.get("/api/admin/store/reviews", requireAdmin, async (req, res) => {
+app.get("/api/admin/store/reviews", adminGuard("reviews"), async (req, res) => {
     try {
         const r = await db.query(`SELECT v.*, p.title AS product_title FROM store_reviews v LEFT JOIN store_products p ON p.id = v.product_id ORDER BY v.created_at DESC LIMIT 500`);
         res.json({ success: true, reviews: r.rows.map(reviewRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-app.get("/api/admin/store/purchases", requireAdmin, async (req, res) => {
+app.get("/api/admin/store/purchases", adminGuard("purchases"), async (req, res) => {
     try {
         const r = await db.query(`SELECT s.*, p.title AS product_title FROM store_purchases s LEFT JOIN store_products p ON p.id = s.product_id ORDER BY s.created_at DESC LIMIT 300`);
-        res.json({ success: true, purchases: r.rows.map(x => ({ id: x.id, discordId: x.discord_id, productId: x.product_id, productTitle: x.product_title, plan: x.plan, amount: x.amount, method: x.method, source: x.source, createdAt: x.created_at })) });
+        res.json({ success: true, purchases: r.rows.map(x => ({ id: x.id, discordId: x.discord_id, productId: x.product_id, productTitle: x.product_title, plan: x.plan, amount: x.amount, method: x.method, source: x.source, couponCode: x.coupon_code, discount: x.discount, createdAt: x.created_at })) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-/* إضافة شراء يدوياً (مثلاً للمنتجات التي لا تمنح رتبة تلقائياً) → يسمح للعميل بالتقييم */
-app.post("/api/admin/store/purchases", requireAdmin, async (req, res) => {
+/* إضافة شراء يدوياً (مثلاً للدفع بالبطاقة عبر الرابط البديل) → يسمح للعميل بالتقييم */
+app.post("/api/admin/store/purchases", adminGuard("purchases"), async (req, res) => {
     try {
         const discordId = String(req.body.discordId || "").trim();
         const productId = parseInt(req.body.productId, 10);
         if (!/^\d{15,22}$/.test(discordId) || !productId) return res.json({ success: false, message: "أدخل آيدي ديسكورد صحيح واختر المنتج" });
-        const p = await db.query("SELECT id, plan, price FROM store_products WHERE id=$1", [productId]);
+        const p = await db.query("SELECT id, title, plan, price FROM store_products WHERE id=$1", [productId]);
         if (!p.rows.length) return res.json({ success: false, message: "المنتج غير موجود" });
         await db.query("INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source) VALUES ($1,$2,$3,$4,$5,'admin')",
             [discordId, productId, p.rows[0].plan, String(p.rows[0].price), "Manual"]);
+        await audit(req, "تسجيل شراء يدوي", p.rows[0].title, `العميل: ${discordId}`);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإضافة" }); }
 });
 
-app.delete("/api/admin/store/purchases/:id", requireAdmin, async (req, res) => {
-    try { await db.query("DELETE FROM store_purchases WHERE id=$1", [parseInt(req.params.id, 10)]); res.json({ success: true }); }
-    catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
+app.delete("/api/admin/store/purchases/:id", adminGuard("purchases"), async (req, res) => {
+    try {
+        const r = await db.query("DELETE FROM store_purchases WHERE id=$1 RETURNING discord_id, plan, amount", [parseInt(req.params.id, 10)]);
+        if (r.rows[0]) await audit(req, "حذف سجل شراء", r.rows[0].discord_id, `${r.rows[0].plan || ""} $${r.rows[0].amount || ""}`);
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
 });
 
 app.get("/api/admin/store/stats", requireAdmin, async (req, res) => {
     try {
-        const [p, r, s, rev] = await Promise.all([
+        const [p, r, s, rev, cp] = await Promise.all([
             db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='available')::int AS available FROM store_products"),
             db.query("SELECT COUNT(*)::int AS cnt, COALESCE(AVG(rating),0) AS avg FROM store_reviews"),
             db.query("SELECT COUNT(*)::int AS cnt FROM store_purchases"),
-            db.query("SELECT COALESCE(SUM(NULLIF(regexp_replace(amount,'[^0-9.]','','g'),'')::numeric),0) AS total FROM store_purchases")
+            db.query("SELECT COALESCE(SUM(NULLIF(regexp_replace(amount,'[^0-9.]','','g'),'')::numeric),0) AS total FROM store_purchases"),
+            db.query("SELECT COUNT(*) FILTER (WHERE active AND (expires_at IS NULL OR expires_at > NOW()))::int AS live FROM store_coupons")
         ]);
-        res.json({ success: true, stats: { products: p.rows[0].total, available: p.rows[0].available, reviews: r.rows[0].cnt, avgRating: Number(Number(r.rows[0].avg).toFixed(1)), purchases: s.rows[0].cnt, revenue: Number(rev.rows[0].total) } });
+        res.json({ success: true, stats: { products: p.rows[0].total, available: p.rows[0].available, reviews: r.rows[0].cnt, avgRating: Number(Number(r.rows[0].avg).toFixed(1)), purchases: s.rows[0].cnt, revenue: Number(rev.rows[0].total), liveCoupons: cp.rows[0].live } });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+
+/* ── كوبونات الخصم ── */
+const couponRow = (c) => ({ id: c.id, code: c.code, type: c.type, value: Number(c.value), maxUses: c.max_uses, used: c.used, expiresAt: c.expires_at ? new Date(c.expires_at).toISOString() : null, productIds: c.product_ids || [], active: c.active, note: c.note, createdAt: c.created_at });
+function cleanCoupon(b, partial = false) {
+    const out = {};
+    if (!partial || b.code !== undefined) { const code = String(b.code || "").trim().toUpperCase(); if (!/^[A-Z0-9_-]{3,24}$/.test(code)) return { error: "الكود: 3-24 حرفاً إنجليزياً أو أرقام (يسمح بـ - و _)" }; out.code = code; }
+    if (!partial || b.type !== undefined) { if (!["percent", "fixed"].includes(b.type)) return { error: "نوع الخصم غير صالح" }; out.type = b.type; }
+    if (!partial || b.value !== undefined) {
+        const n = Number(b.value); const t = out.type || b.type;
+        if (!isFinite(n) || n <= 0) return { error: "قيمة الخصم غير صالحة" };
+        if (t === "percent" && n > 95) return { error: "نسبة الخصم لا تتجاوز 95%" };
+        if (n > 10000) return { error: "قيمة الخصم كبيرة جداً" };
+        out.value = round2(n);
+    }
+    if (!partial || b.maxUses !== undefined) { if (b.maxUses === null || b.maxUses === "" || b.maxUses === undefined) out.max_uses = null; else { const n = parseInt(b.maxUses, 10); if (!(n >= 1 && n <= 1000000)) return { error: "عدد الاستخدامات غير صالح" }; out.max_uses = n; } }
+    if (!partial || b.expiresAt !== undefined) { if (!b.expiresAt) out.expires_at = null; else { const d = new Date(b.expiresAt); if (isNaN(d.getTime())) return { error: "تاريخ الانتهاء غير صالح" }; out.expires_at = d.toISOString(); } }
+    if (!partial || b.productIds !== undefined) { const a = Array.isArray(b.productIds) ? b.productIds.map(x => parseInt(x, 10)).filter(x => x > 0) : []; out.product_ids = a.length ? a : null; }
+    if (!partial || b.active !== undefined) out.active = b.active === undefined ? true : !!b.active;
+    if (!partial || b.note !== undefined) out.note = String(b.note || "").slice(0, 120);
+    return { value: out };
+}
+app.get("/api/admin/store/coupons", adminGuard("coupons"), async (req, res) => {
+    try { const r = await db.query("SELECT * FROM store_coupons ORDER BY created_at DESC"); res.json({ success: true, coupons: r.rows.map(couponRow) }); }
+    catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.post("/api/admin/store/coupons", adminGuard("coupons"), async (req, res) => {
+    try {
+        const c = cleanCoupon(req.body); if (c.error) return res.json({ success: false, message: c.error });
+        const v = c.value;
+        await db.query(`INSERT INTO store_coupons (code,type,value,max_uses,expires_at,product_ids,active,note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [v.code, v.type, v.value, v.max_uses, v.expires_at, v.product_ids, v.active, v.note]);
+        await audit(req, "إنشاء كوبون", v.code, `${v.type === "percent" ? v.value + "%" : "$" + v.value}`);
+        res.json({ success: true });
+    } catch (err) {
+        if (err.code === "23505") return res.json({ success: false, message: "هذا الكود موجود مسبقاً" });
+        console.error(err); res.status(500).json({ success: false, message: "تعذّر إنشاء الكوبون" });
+    }
+});
+app.put("/api/admin/store/coupons/:id", adminGuard("coupons"), async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const cur = await db.query("SELECT * FROM store_coupons WHERE id=$1", [id]); if (!cur.rows.length) return res.json({ success: false, message: "الكوبون غير موجود" });
+        const c = cleanCoupon({ type: cur.rows[0].type, ...req.body }, true); if (c.error) return res.json({ success: false, message: c.error });
+        const v = c.value; delete v.code; delete v.type;
+        const keys = Object.keys(v); if (!keys.length) return res.json({ success: true });
+        await db.query(`UPDATE store_coupons SET ${keys.map((k, i) => `${k}=$${i + 1}`).join(", ")} WHERE id=$${keys.length + 1}`, [...keys.map(k => v[k]), id]);
+        await audit(req, "تعديل كوبون", cur.rows[0].code, keys.join(", "));
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر التعديل" }); }
+});
+app.delete("/api/admin/store/coupons/:id", adminGuard("coupons"), async (req, res) => {
+    try {
+        const r = await db.query("DELETE FROM store_coupons WHERE id=$1 RETURNING code", [parseInt(req.params.id, 10)]);
+        if (r.rows[0]) await audit(req, "حذف كوبون", r.rows[0].code, "");
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
+});
+
+/* ── إعدادات عامة ── */
+async function getSetting(key, def = null) { const r = await db.query("SELECT value FROM store_settings WHERE key=$1", [key]); return r.rows.length ? r.rows[0].value : def; }
+app.get("/api/admin/store/settings", adminGuard("settings"), async (req, res) => {
+    try { res.json({ success: true, settings: { customersBase: Number(await getSetting("customers_base", "0")), baseSince: await getSetting("base_since", null) } }); }
+    catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.put("/api/admin/store/settings", adminGuard("settings"), async (req, res) => {
+    try {
+        const n = parseInt(req.body.customersBase, 10);
+        if (!(n >= 0 && n <= 10000000)) return res.json({ success: false, message: "الرقم غير صالح" });
+        const old = await getSetting("customers_base", "0");
+        await db.query("INSERT INTO store_settings(key,value) VALUES ('customers_base',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(n)]);
+        await audit(req, "تعديل الإعدادات", "عدد العملاء الأساسي", `${old} ← ${n}`);
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحفظ" }); }
+});
+
+/* ── إدارة الأدمنز + سجل العمليات (للأدمن الأساسي فقط) ── */
+app.get("/api/admin/store/admins", adminGuard("main"), async (req, res) => {
+    try {
+        const r = await db.query("SELECT * FROM store_admins ORDER BY created_at");
+        const list = await Promise.all(r.rows.map(async x => ({ discordId: x.discord_id, perms: x.perms || [], username: (await fetchDiscordProfile(x.discord_id)).username, createdAt: x.created_at })));
+        res.json({ success: true, admins: list, allPerms: ALL_PERMS, mainAdmin: MAIN_ADMIN_ID });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.post("/api/admin/store/admins", adminGuard("main"), async (req, res) => {
+    try {
+        const id = String(req.body.discordId || "").trim();
+        if (!/^\d{15,22}$/.test(id)) return res.json({ success: false, message: "آيدي ديسكورد غير صحيح" });
+        if (isMainAdmin(id)) return res.json({ success: false, message: "هذا هو الأدمن الأساسي" });
+        const perms = (Array.isArray(req.body.perms) ? req.body.perms : []).filter(p => ALL_PERMS.includes(p));
+        if (!perms.length) return res.json({ success: false, message: "اختر صلاحية واحدة على الأقل" });
+        await db.query(`INSERT INTO store_admins (discord_id, perms, added_by) VALUES ($1,$2,$3) ON CONFLICT (discord_id) DO UPDATE SET perms=EXCLUDED.perms`, [id, perms, req.user.discordId]);
+        await loadStoreAdmins();
+        await audit(req, "إضافة/تعديل أدمن", id, perms.join(", "));
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإضافة" }); }
+});
+app.delete("/api/admin/store/admins/:id", adminGuard("main"), async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        await db.query("DELETE FROM store_admins WHERE discord_id=$1", [id]); await loadStoreAdmins();
+        await audit(req, "إزالة أدمن", id, "");
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإزالة" }); }
+});
+app.get("/api/admin/store/audit", adminGuard("main"), async (req, res) => {
+    try {
+        const r = await db.query("SELECT * FROM store_audit ORDER BY created_at DESC, id DESC LIMIT 300");
+        res.json({ success: true, logs: r.rows.map(x => ({ id: x.id, actorId: x.actor_id, actor: x.actor_name, action: x.action, target: x.target, detail: x.detail, createdAt: x.created_at })) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
@@ -1792,7 +2077,86 @@ function ensureCheckoutSchema() {
 // هل الدفع التلقائي مفعّل؟ (الموقع يستخدمه ليقرر الطريقة)
 app.get("/api/store/checkout/status", (req, res) => res.json({ success: true, enabled: !!(PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET) }));
 
-// إنشاء طلب دفع وإرجاع رابط PayPal
+app.get("/api/store/me", storeReadLimiter, authUser(true), async (req, res) => {
+    const prof = await fetchDiscordProfile(req.user.discordId);
+    let plans = [];
+    try { plans = (await getPlansFromDiscord(req.user.discordId)) || []; } catch {}
+    const perms = getPerms(req.user.discordId);
+    res.json({ success: true, discordId: req.user.discordId, username: prof.username, avatar: prof.avatar, plans, isAdmin: perms.length > 0, perms, isMain: isMainAdmin(req.user.discordId) });
+});
+
+/* أرقام عامة للرئيسية: العملاء + المبيعات + التقييم */
+app.get("/api/store/public-stats", storeReadLimiter, async (req, res) => {
+    try {
+        const since = `COALESCE((SELECT value::timestamp FROM store_settings WHERE key='base_since'), 'epoch'::timestamp)`;
+        const [base, buyers, sales, base2, rv] = await Promise.all([
+            getSetting("customers_base", "0"),
+            db.query(`SELECT COUNT(DISTINCT discord_id)::int AS n FROM store_purchases WHERE created_at >= ${since}`),
+            db.query(`SELECT COUNT(*)::int AS n FROM store_purchases WHERE created_at >= ${since}`),
+            db.query(`SELECT COALESCE(SUM(sold_base),0)::int AS n FROM store_products`),
+            db.query(`SELECT COALESCE(AVG(rating),0) AS avg, COUNT(*)::int AS cnt FROM store_reviews`)
+        ]);
+        res.json({ success: true, customers: Number(base) + buyers.rows[0].n, sales: base2.rows[0].n + sales.rows[0].n, reviews: { avg: Number(Number(rv.rows[0].avg).toFixed(1)), count: rv.rows[0].cnt } });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+
+/* ── كوبونات (جهة العميل) ── */
+async function evalCoupon(codeRaw, prod, discordId) {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,24}$/.test(code)) return { error: "كود الخصم غير صالح" };
+    const r = await db.query("SELECT * FROM store_coupons WHERE code=$1", [code]);
+    const c = r.rows[0];
+    if (!c || !c.active) return { error: "كود الخصم غير صحيح" };
+    if (c.expires_at && new Date(c.expires_at) <= new Date()) return { error: "انتهت صلاحية كود الخصم" };
+    if (c.max_uses != null && c.used >= c.max_uses) return { error: "تم استنفاد هذا الكود" };
+    if (c.product_ids && c.product_ids.length && !c.product_ids.includes(prod.id)) return { error: "هذا الكود لا ينطبق على هذا المنتج" };
+    const used = await db.query("SELECT 1 FROM store_purchases WHERE discord_id=$1 AND coupon_code=$2 LIMIT 1", [discordId, code]);
+    if (used.rows.length) return { error: "استخدمت هذا الكود من قبل" };
+    const base = effPrice(prod);
+    let disc = c.type === "percent" ? round2(base * Number(c.value) / 100) : Math.min(Number(c.value), base);
+    let final = round2(base - disc);
+    if (final < 1) { final = Math.min(1, base); disc = round2(base - final); }     // حد أدنى للسعر النهائي: 1$
+    return { coupon: c, code, base, discount: disc, final };
+}
+app.post("/api/store/coupons/validate", checkoutLimiter, authUser(true), async (req, res) => {
+    try {
+        const pr = await db.query("SELECT * FROM store_products WHERE id=$1 AND status='available' AND is_support=FALSE", [parseInt(req.body.productId, 10)]);
+        if (!pr.rows.length) return res.json({ success: false, message: "المنتج غير متوفر" });
+        const e = await evalCoupon(req.body.code, pr.rows[0], req.user.discordId);
+        if (e.error) return res.json({ success: false, message: e.error });
+        res.json({ success: true, code: e.code, type: e.coupon.type, value: Number(e.coupon.value), original: e.base, discount: e.discount, final: e.final });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر التحقق من الكود" }); }
+});
+
+/* ── مشترياتي ── */
+app.get("/api/store/my/purchases", storeReadLimiter, authUser(true), async (req, res) => {
+    try {
+        const id = req.user.discordId;
+        const r = await db.query(
+            `SELECT s.id, s.amount, s.method, s.source, s.coupon_code, s.created_at,
+                    p.id AS pid, p.title, p.title_en, p.image, p.plan, p.category, p.is_support, v.rating AS my_rating
+             FROM store_purchases s
+             LEFT JOIN store_products p ON p.id = s.product_id
+             LEFT JOIN store_reviews v ON v.product_id = s.product_id AND v.discord_id = s.discord_id
+             WHERE s.discord_id=$1 ORDER BY s.created_at DESC LIMIT 100`, [id]);
+        const rows = r.rows.map(x => ({
+            id: x.id, amount: x.amount, method: x.method, source: x.source, couponCode: x.coupon_code, createdAt: x.created_at,
+            product: x.pid ? { id: x.pid, title: x.title, titleEn: x.title_en || "", image: x.image, plan: x.plan, category: x.category } : null,
+            myRating: x.my_rating || null
+        }));
+        let plans = []; try { plans = (await getPlansFromDiscord(id)) || []; } catch {}
+        const have = new Set(rows.filter(x => x.product).map(x => x.product.id));
+        let fromRoles = [];
+        if (plans.length) {
+            const pr = await db.query(`SELECT p.id, p.title, p.title_en, p.image, p.plan, p.category, v.rating AS my_rating
+                FROM store_products p LEFT JOIN store_reviews v ON v.product_id = p.id AND v.discord_id=$2 WHERE p.plan = ANY($1)`, [plans, id]);
+            fromRoles = pr.rows.filter(p => !have.has(p.id)).map(p => ({ id: null, amount: null, method: null, source: "discord-role", couponCode: null, createdAt: null, product: { id: p.id, title: p.title, titleEn: p.title_en || "", image: p.image, plan: p.plan, category: p.category }, myRating: p.my_rating || null }));
+        }
+        res.json({ success: true, purchases: [...rows, ...fromRoles], plans });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر جلب مشترياتك" }); }
+});
+
+// إنشاء طلب دفع وإرجاع رابط PayPal (يدعم كود الخصم، والعروض)
 app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res) => {
     if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
     try {
@@ -1801,15 +2165,20 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
         const p = pr.rows[0];
         if (!p || p.status !== "available") return res.json({ success: false, message: "المنتج غير متوفر حالياً" });
         if (p.is_support) return res.json({ success: false, message: "منتج الدعم يتم عبر رابطه المباشر" });
-        const price = Number(p.price);
+        let price = effPrice(p), code = null;
         if (!(price > 0)) return res.json({ success: false, message: "سعر المنتج غير صالح" });
+        if (req.body.couponCode) {
+            const e = await evalCoupon(req.body.couponCode, p, req.user.discordId);
+            if (e.error) return res.json({ success: false, message: e.error });
+            price = e.final; code = e.code;
+        }
 
         const site = WEBSITE_URL.replace(/\/+$/, "");
         const order = await paypalCall("POST", "/v2/checkout/orders", {
             intent: "CAPTURE",
             purchase_units: [{
                 reference_id: `p${p.id}`,
-                custom_id: `d=${req.user.discordId}&p=${p.id}`,
+                custom_id: `d=${req.user.discordId}&p=${p.id}` + (code ? `&c=${code}` : ""),
                 description: String(p.title).slice(0, 120),
                 amount: { currency_code: "USD", value: price.toFixed(2) }
             }],
@@ -1821,11 +2190,11 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
 
         const link = (order.data.links || []).find(l => l.rel === "payer-action") || (order.data.links || []).find(l => l.rel === "approve");
         if (!link) { console.error("❌ PayPal create order failed:", JSON.stringify(order.data)); return res.json({ success: false, message: "تعذّر بدء الدفع، حاول لاحقاً" }); }
-        res.json({ success: true, url: link.href, orderId: order.data.id });
+        res.json({ success: true, url: link.href, orderId: order.data.id, amount: price });
     } catch (err) { console.error("checkout error:", err); res.status(500).json({ success: false, message: "تعذّر بدء الدفع" }); }
 });
 
-// بعد رجوع العميل من PayPal: التقاط الدفعة ثم تسجيل الشراء وإعطاء الرتبة
+// بعد رجوع العميل من PayPal: التقاط الدفعة ثم تسجيل الشراء وإعطاء الرتبة والإشعارات
 app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (req, res) => {
     if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
     try {
@@ -1840,6 +2209,7 @@ app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (
         const cm = new URLSearchParams(unit.custom_id || "");
         if (cm.get("d") !== req.user.discordId) return res.status(403).json({ success: false, message: "هذا الطلب لا يخص حسابك" });
         const productId = parseInt(cm.get("p"), 10);
+        const couponCode = (cm.get("c") || "").toUpperCase() || null;
 
         if (order.status === "APPROVED") {
             const cap = await paypalCall("POST", `/v2/checkout/orders/${orderId}/capture`, undefined, "cap-" + orderId);
@@ -1854,21 +2224,28 @@ app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (
         const pr = await db.query("SELECT * FROM store_products WHERE id=$1", [productId]);
         const p = pr.rows[0];
         const plan = p && p.plan ? p.plan : null;
+        const discount = couponCode && p ? Math.max(0, round2(effPrice(p) - Number(amount))) : null;
 
         const ins = await db.query(
-            `INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source, paypal_order_id)
-             VALUES ($1,$2,$3,$4,'PayPal','checkout',$5) ON CONFLICT (paypal_order_id) WHERE paypal_order_id IS NOT NULL DO NOTHING RETURNING id`,
-            [req.user.discordId, p ? p.id : null, plan, amount == null ? null : String(amount), orderId]);
+            `INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source, paypal_order_id, coupon_code, discount)
+             VALUES ($1,$2,$3,$4,'PayPal','checkout',$5,$6,$7) ON CONFLICT (paypal_order_id) WHERE paypal_order_id IS NOT NULL DO NOTHING RETURNING id`,
+            [req.user.discordId, p ? p.id : null, plan, amount == null ? null : String(amount), orderId, couponCode, discount || null]);
 
         let delivered = null;
         if (ins.rows.length) {           // أول مرة نعالج هذا الطلب
+            if (couponCode) await db.query("UPDATE store_coupons SET used = used + 1 WHERE code=$1", [couponCode]).catch(() => {});
             if (plan) {
                 delivered = await grantRoleToUser(req.user.discordId, plan);
                 if (delivered) await sendDMToUser(req.user.discordId, plan);
             }
             await sendLogToDiscord(req.user.discordId, plan || (p ? p.title : "منتج"), amount, "PayPal (موقع)");
+            if (p) {
+                const prof = await fetchDiscordProfile(req.user.discordId);
+                const sp = await db.query(`${PRODUCT_SELECT} WHERE p.id=$1`, [p.id]);
+                notifyStore(purchaseEmbed({ product: p, amount, userId: req.user.discordId, username: prof.username, avatar: prof.avatar, couponCode, discount, plan, roleGranted: delivered, sold: sp.rows[0] ? sp.rows[0].sold : null }));
+            }
         }
-        res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
+        res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", productTitleEn: p ? p.title_en : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
     } catch (err) { console.error("capture error:", err); res.status(500).json({ success: false, message: "تعذّر تأكيد الدفع، تواصل معنا وسنؤكده يدوياً" }); }
 });
 
