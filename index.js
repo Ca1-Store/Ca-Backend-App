@@ -1077,11 +1077,20 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-03-18",
-                    latest: true,
+                    latest: false,
                     size: "1.80 GB",
                     features: ["الإصدار الأولي", "جرافيكس أساسي"],
                     changelog: "الإصدار الأولي من باك الجرافيكس",
                     url: "http://169.58.57.199/CA-1%20PACK.zip"
+                },
+                 {
+                    version: "2.0",
+                    date: "2026-10-27",
+                    latest: true,
+                    size: "328 MB",
+                    features: [" تحسين الألوان", "تقليص حجم الملفات", " تحسين الغيوم"],
+                    changelog: "الإصدار الأولي من باك الجرافيكس",
+                    url: "http://169.58.57.199/CA-1%20PACK.v2.zip"
                 }
             ]
         },
@@ -1143,7 +1152,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "2.0",
                     date: "2026-06-6",
-                    latest: false,
+                    latest: true,
                     size: "700 MB",
                     features: ["تخفيف الحجم", "زيادة الفريمات", "أداء محسّن"],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وزيادة الفريمات",
@@ -1152,7 +1161,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-05-28",
-                    latest: true,
+                    latest: false,
                     size: "900 MB",
                     features: ["الإصدار الأولي", "جرافيكس فائق"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
@@ -1171,7 +1180,7 @@ app.get("/api/packs", async (req, res) => {
                                {
                     version: "2.0",
                     date: "2026-10-6",
-                    latest: false,
+                    latest: true,
                     size: "1.22 GB",
                     features: ["تخفيف الحجم", "ألوان أجمل ", "غيوم أفضل "],
                     changelog: "تحديث رئيسي مع تحسينات كبيرة في الأداء وتحسين الالوان ",
@@ -1181,7 +1190,7 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-06-24",
-                    latest: true,
+                    latest: false,
                     size: "1.35 GB",
                     features: ["جرافيكس فائق الجودة", "أداء محسّن"],
                     changelog: "الإصدار الأولي من باك الجرافيكس فائق الجودة",
