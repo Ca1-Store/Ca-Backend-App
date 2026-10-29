@@ -57,6 +57,9 @@ const ROLE_PLAN_MAP = {
     "1518902435421225121": "CA-5",
 };
 
+// رول إضافي يُمنح لكل عميل عند أي شراء (يمكن تغييره من Railway: CUSTOMER_ROLE_ID)
+const CUSTOMER_ROLE_ID = process.env.CUSTOMER_ROLE_ID || "1479572984229269596";
+
 const PLAN_ROLE_MAP = {
     "CA-1": "1479829127715618866",
     "CA-2": "1479829984385171557",
@@ -185,6 +188,15 @@ async function grantRoleToUser(discordId, plan) {
 
         if (res.ok) {
             console.log(`✅ Granted role ${plan} to user ${discordId}`);
+            if (CUSTOMER_ROLE_ID && CUSTOMER_ROLE_ID !== roleId) {
+                try {
+                    const r2 = await fetch(
+                        `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}/roles/${CUSTOMER_ROLE_ID}`,
+                        { method: "PUT", headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } }
+                    );
+                    if (!r2.ok) console.error(`⚠️ Failed to grant customer role: ${await r2.text()}`);
+                } catch (e) { console.error("⚠️ customer role error:", e.message); }
+            }
             return true;
         } else {
             const error = await res.text();
@@ -1501,6 +1513,15 @@ const STORE_SEED = [
                 await db.query("UPDATE store_products SET sold_base=$1 WHERE plan=$2", [n, plan]);
             await db.query("INSERT INTO store_settings(key,value) VALUES ('base_seeded','1') ON CONFLICT (key) DO NOTHING");
         }
+        // صور قبل/بعد الافتراضية لنسخ CA-1..CA-5 (مرة واحدة، لا تمس ما ضبطته يدوياً)
+        if (!(await db.query("SELECT 1 FROM store_settings WHERE key='compare_seeded'")).rows.length) {
+        for (const n of [1, 2, 3, 4, 5])
+            await db.query(
+                `UPDATE store_products SET media = jsonb_set(COALESCE(media,'{}'::jsonb), '{compare}', $1::jsonb)
+                 WHERE plan=$2 AND (media->'compare' IS NULL OR jsonb_array_length(media->'compare')=0)`,
+                [JSON.stringify([{ before: `CA-${n}-BEFORE.png`, after: `CA-${n}-AFTER.png`, label: `CA-${n}` }]), `CA-${n}`]);
+        await db.query("INSERT INTO store_settings(key,value) VALUES ('compare_seeded','1') ON CONFLICT (key) DO NOTHING");
+        }
         await loadStoreAdmins();
     } catch (err) { console.error("Store init error:", err); }
 })();
@@ -1728,7 +1749,10 @@ app.post("/api/store/reviews", storeReviewLimiter, authUser(true), async (req, r
              VALUES ($1,$2,$3,$4,$5,$6)
              ON CONFLICT (product_id, discord_id) DO UPDATE SET rating=EXCLUDED.rating, comment=EXCLUDED.comment, username=EXCLUDED.username, avatar=EXCLUDED.avatar, created_at=NOW()`,
             [productId, req.user.discordId, prof.username, prof.avatar, rating, comment]);
-        notifyStore(reviewEmbed({ isUpdate: prev.rows.length > 0, product: pr.rows[0], rating, comment, userId: req.user.discordId, username: prof.username, avatar: prof.avatar }));
+        try {
+            const ag = await db.query("SELECT ROUND(AVG(rating)::numeric,1) AS avg, COUNT(*)::int AS c FROM store_reviews WHERE product_id=$1", [productId]);
+            notifyStore(reviewEmbed({ isUpdate: prev.rows.length > 0, product: pr.rows[0], rating, comment, userId: req.user.discordId, username: prof.username, avatar: prof.avatar, avg: ag.rows[0].avg, count: ag.rows[0].c }), reviewButtons(productId));
+        } catch (e) { console.error("review notify error:", e.message); }
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر إرسال التقييم" }); }
 });
@@ -1748,52 +1772,53 @@ app.delete("/api/store/reviews/:id", storeReviewLimiter, authUser(true), async (
 
 /* ── إشعارات ديسكورد (تقييمات + مبيعات الموقع) ── */
 const STORE_NOTIFY_CHANNEL_ID = process.env.STORE_NOTIFY_CHANNEL_ID || "1480229260466852092";
-async function notifyStore(embed) {
+async function notifyStore(embed, components) {
     try {
         if (!STORE_NOTIFY_CHANNEL_ID || !DISCORD_BOT_TOKEN) return;
         const r = await fetch(`https://discord.com/api/v10/channels/${STORE_NOTIFY_CHANNEL_ID}/messages`, {
             method: "POST",
             headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] } })
+            body: JSON.stringify({ embeds: [embed], components: components || [], allowed_mentions: { parse: [] } })
         });
-        if (r && r.ok === false) console.error("⚠️ store notify failed:", r.status);
+        if (r && r.ok === false) console.error("⚠️ store notify failed:", r.status, await r.text().catch(() => ""));
     } catch (e) { console.error("⚠️ store notify error:", e.message); }
 }
 const clean = (s, n) => String(s || "").replace(/`/g, "'").slice(0, n);
-const starsTxt = (n) => "★".repeat(n) + "☆".repeat(5 - n);
-function reviewEmbed({ isUpdate, product, rating, comment, userId, username, avatar }) {
+const RATING_META = {
+    5: { color: 0x3DDC97, label: "ممتاز" }, 4: { color: 0x9BE15D, label: "جيد جداً" },
+    3: { color: 0xF5B84A, label: "جيد" },    2: { color: 0xF08A4B, label: "مقبول" }, 1: { color: 0xE5484D, label: "ضعيف" }
+};
+function productImageUrl(img) {
+    if (!img) return undefined;
+    if (/^https:\/\//.test(img)) return img;
+    return `${WEBSITE_URL.replace(/\/$/, "")}/assets/products/${encodeURIComponent(img)}`;
+}
+function reviewEmbed({ isUpdate, product, rating, comment, userId, username, avatar, avg, count }) {
+    const meta = RATING_META[rating] || RATING_META[5];
+    const stars = "⭐".repeat(rating) + "▫️".repeat(5 - rating);
+    const quote = comment ? ">>> " + clean(comment, 900) : "*لم يترك العميل تعليقاً.*";
+    const fields = [
+        { name: "👤 العميل", value: `<@${userId}>`, inline: true },
+        { name: "🏷️ النسخة", value: product.plan ? `\`${product.plan}\`` : "—", inline: true },
+        { name: "📊 متوسط المنتج", value: count ? `**${avg}** / 5  ·  ${count} تقييم` : "—", inline: true }
+    ];
     return {
-        title: isUpdate ? "✏️ تعديل تقييم" : "⭐ تقييم جديد",
+        author: { name: `${clean(username, 40) || "عميل"}  •  ${isUpdate ? "عدّل تقييمه" : "تقييم جديد"}`, icon_url: avatar || undefined },
+        title: clean(product.title, 200),
         url: `${WEBSITE_URL}/product.html?id=${product.id}`,
-        color: 0xF5B84A,
-        description: comment ? "> " + clean(comment, 900).replace(/\n+/g, "\n> ") : "*بدون تعليق*",
-        fields: [
-            { name: "المنتج", value: clean(product.title, 200) || "—", inline: false },
-            { name: "التقييم", value: `${starsTxt(rating)}  **${rating}/5**`, inline: true },
-            { name: "العميل", value: `<@${userId}>\n\`${clean(username, 60)}\``, inline: true }
-        ],
-        thumbnail: avatar ? { url: avatar } : undefined,
-        footer: { text: "CA Store • التقييمات" },
+        color: meta.color,
+        description: `${stars}\n**${rating}/5 — ${meta.label}**\n\n${quote}`,
+        fields,
+        thumbnail: productImageUrl(product.image) ? { url: productImageUrl(product.image) } : undefined,
+        footer: { text: "CA Store  •  تقييمات العملاء  •  مشتري موثّق ✅" },
         timestamp: new Date().toISOString()
     };
 }
-function purchaseEmbed({ product, amount, userId, username, avatar, couponCode, discount, plan, roleGranted, sold }) {
-    const sar = Math.ceil(Number(amount) * 3.75 / 5) * 5;
-    const fields = [
-        { name: "المنتج", value: clean(product.title, 200) || "—", inline: false },
-        { name: "المبلغ", value: `**$${Number(amount).toFixed(2)}**  (≈ ${sar} ر.س)`, inline: true },
-        { name: "العميل", value: `<@${userId}>\n\`${clean(username, 60)}\``, inline: true }
-    ];
-    if (couponCode) fields.push({ name: "كود الخصم", value: `\`${clean(couponCode, 24)}\`${discount ? `  (−$${Number(discount).toFixed(2)})` : ""}`, inline: true });
-    if (plan) fields.push({ name: "الرتبة", value: roleGranted ? `✅ ${plan} — تم منحها تلقائياً` : `⚠️ ${plan} — تعذّر منحها، تحقق يدوياً`, inline: true });
-    fields.push({ name: "إجمالي مبيعات المنتج", value: String(sold ?? "—"), inline: true });
-    return {
-        title: "🛒 عملية شراء جديدة من الموقع",
-        url: `${WEBSITE_URL}/product.html?id=${product.id}`,
-        color: roleGranted === false ? 0xF5B84A : 0x3DDC97,
-        fields, thumbnail: avatar ? { url: avatar } : undefined,
-        footer: { text: "CA Store • المبيعات" }, timestamp: new Date().toISOString()
-    };
+function reviewButtons(productId) {
+    return [{ type: 1, components: [
+        { type: 2, style: 5, label: "عرض المنتج", url: `${WEBSITE_URL}/product.html?id=${productId}` },
+        { type: 2, style: 5, label: "كل التقييمات", url: `${WEBSITE_URL}/reviews.html` }
+    ] }];
 }
 
 /* ── سجل العمليات ── */
@@ -2248,11 +2273,6 @@ app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (
                 if (delivered) await sendDMToUser(req.user.discordId, plan);
             }
             await sendLogToDiscord(req.user.discordId, plan || (p ? p.title : "منتج"), amount, "PayPal (موقع)");
-            if (p) {
-                const prof = await fetchDiscordProfile(req.user.discordId);
-                const sp = await db.query(`${PRODUCT_SELECT} WHERE p.id=$1`, [p.id]);
-                notifyStore(purchaseEmbed({ product: p, amount, userId: req.user.discordId, username: prof.username, avatar: prof.avatar, couponCode, discount, plan, roleGranted: delivered, sold: sp.rows[0] ? sp.rows[0].sold : null }));
-            }
         }
         res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", productTitleEn: p ? p.title_en : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
     } catch (err) { console.error("capture error:", err); res.status(500).json({ success: false, message: "تعذّر تأكيد الدفع، تواصل معنا وسنؤكده يدوياً" }); }
