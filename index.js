@@ -4,13 +4,14 @@ const { Pool } = require("pg");
 const rateLimit = require("express-rate-limit");
 const cors = require("cors");
 const crypto = require("crypto");
+const LEGACY_SEED_PATH = "/__seed_" + crypto.randomBytes(8).toString("hex");
 
 // Node 18+ فيه fetch مدمج، ويرجع لـ node-fetch فقط إذا كان Node قديماً
 const fetch = (...args) => (typeof globalThis.fetch === "function" ? globalThis.fetch(...args) : import("node-fetch").then(({ default: f }) => f(...args)));
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json());
+app.use(express.json({ limit: "256kb" }));
 
 // CORS Configuration
 const allowedOrigins = [
@@ -56,6 +57,9 @@ const ROLE_PLAN_MAP = {
     "1509080955858456687": "CA-4",
     "1518902435421225121": "CA-5",
 };
+
+// رول إضافي يُمنح لكل عميل عند أي شراء (يمكن تغييره من Railway: CUSTOMER_ROLE_ID)
+const CUSTOMER_ROLE_ID = process.env.CUSTOMER_ROLE_ID || "1479572984229269596";
 
 const PLAN_ROLE_MAP = {
     "CA-1": "1479829127715618866",
@@ -185,6 +189,15 @@ async function grantRoleToUser(discordId, plan) {
 
         if (res.ok) {
             console.log(`✅ Granted role ${plan} to user ${discordId}`);
+            if (CUSTOMER_ROLE_ID && CUSTOMER_ROLE_ID !== roleId) {
+                try {
+                    const r2 = await fetch(
+                        `https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}/roles/${CUSTOMER_ROLE_ID}`,
+                        { method: "PUT", headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } }
+                    );
+                    if (!r2.ok) console.error(`⚠️ Failed to grant customer role: ${await r2.text()}`);
+                } catch (e) { console.error("⚠️ customer role error:", e.message); }
+            }
             return true;
         } else {
             const error = await res.text();
@@ -1064,7 +1077,7 @@ app.delete("/api/ratings/rating", async (req, res) => {
 /* ============================================================
    API: جلب بيانات الـ Packs مع نظام الـ Versions
 ============================================================ */
-app.get("/api/packs", async (req, res) => {
+app.get(LEGACY_SEED_PATH + "/packs", async (req, res) => {
     const packs = [
         {
             id: "CA1",
@@ -1077,11 +1090,20 @@ app.get("/api/packs", async (req, res) => {
                 {
                     version: "1.0",
                     date: "2026-03-18",
-                    latest: true,
+                    latest: false,
                     size: "1.80 GB",
                     features: ["الإصدار الأولي", "جرافيكس أساسي"],
                     changelog: "الإصدار الأولي من باك الجرافيكس",
                     url: "http://169.58.57.199/CA-1%20PACK.zip"
+                },
+                 {
+                    version: "2.0",
+                    date: "2026-10-27",
+                    latest: true,
+                    size: "328 MB",
+                    features: [" تحسين الألوان", "تقليص حجم الملفات", " تحسين الغيوم"],
+                    changelog: "الإصدار الأولي من باك الجرافيكس",
+                    url: "http://169.58.57.199/CA-1%20PACK.v2.zip"
                 }
             ]
         },
@@ -1130,7 +1152,6 @@ app.get("/api/packs", async (req, res) => {
                     changelog: "تغييرات بالغيوم وبالسماء وبالالوان لنقل الجرافيكس لجودة أجمل",
                     url: "http://169.58.57.199/CA-3-PACK.v2.zip"
                 }
-
             ]
         },
         {
@@ -1197,7 +1218,7 @@ app.get("/api/packs", async (req, res) => {
 /* ============================================================
    API: جلب بيانات المودات
 ============================================================ */
-app.get("/api/mods", async (req, res) => {
+app.get(LEGACY_SEED_PATH + "/mods", async (req, res) => {
 const sections = [
     {
         title: "Roads",
@@ -1283,7 +1304,7 @@ const sections = [
 /* ============================================================
    API: جلب بيانات Customizations
 ============================================================ */
-app.get("/api/customizations", async (req, res) => {
+app.get(LEGACY_SEED_PATH + "/customizations", async (req, res) => {
     const customizationsArray = [
         {
             id: "no_water",
@@ -1363,7 +1384,7 @@ const PRESETS = [
     // P("CA - Snow",   "CA - Snow - preset.ini",   "أجواء شتوية باردة",     "../assets/presets/snow.png",  "28 KB"),
 ];
 
-app.get("/api/presets", (req, res) => {
+app.get(LEGACY_SEED_PATH + "/presets", (req, res) => {
     // نرسل فقط الملفات بصيغة .ini
     res.json({ success: true, presets: PRESETS.filter(p => /\.ini$/i.test(p.file)) });
 });
@@ -1376,7 +1397,22 @@ app.get("/api/presets", (req, res) => {
    • التقييم مسموح فقط لمن اشترى المنتج (رتبة الباك في ديسكورد أو سجل شراء).
 ============================================================ */
 const STORE_ADMIN_IDS = [ADMIN_DISCORD_ID, ...(process.env.STORE_ADMIN_IDS || "").split(",").map(s => s.trim()).filter(Boolean)];
-const isStoreAdmin = (id) => !!id && STORE_ADMIN_IDS.includes(String(id));
+const ALL_PERMS = ["products", "reviews", "purchases", "coupons", "settings"];
+const MAIN_ADMIN_ID = String(ADMIN_DISCORD_ID || "");
+const adminCache = new Map();
+async function loadStoreAdmins() {
+    const r = await db.query("SELECT discord_id, perms FROM store_admins");
+    adminCache.clear(); r.rows.forEach(x => adminCache.set(String(x.discord_id), x.perms || []));
+}
+const isMainAdmin = (id) => !!id && !!MAIN_ADMIN_ID && String(id) === MAIN_ADMIN_ID;
+function getPerms(id) {
+    id = String(id || ""); if (!id) return [];
+    if (isMainAdmin(id) || STORE_ADMIN_IDS.includes(id)) return [...ALL_PERMS];
+    return adminCache.get(id) || [];
+}
+const isStoreAdmin = (id) => getPerms(id).length > 0;
+const hasPerm = (id, p) => getPerms(id).includes(p);
+
 
 const storeReadLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "طلبات كثيرة" } });
 const storeReviewLimiter = rateLimit({ windowMs: 60 * 1000, max: 8, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "محاولات كثيرة، انتظر قليلاً" } });
@@ -1453,26 +1489,98 @@ const STORE_SEED = [
             await db.query("SELECT setval(pg_get_serial_sequence('store_products','id'), (SELECT MAX(id) FROM store_products))");
             console.log("✅ Store products seeded");
         }
+        /* ── v2: عروض / مبيعات / وسائط / كوبونات / صلاحيات / سجل ── */
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS title_en TEXT NOT NULL DEFAULT ''`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS description_en TEXT NOT NULL DEFAULT ''`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS offer_ends_at TIMESTAMPTZ`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS sold_base INTEGER NOT NULL DEFAULT 0`);
+        await db.query(`ALTER TABLE store_products ADD COLUMN IF NOT EXISTS media JSONB NOT NULL DEFAULT '{}'::jsonb`);
+        await db.query(`ALTER TABLE store_purchases ADD COLUMN IF NOT EXISTS coupon_code TEXT`);
+        await db.query(`ALTER TABLE store_purchases ADD COLUMN IF NOT EXISTS discount NUMERIC(10,2)`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_coupons (
+            id SERIAL PRIMARY KEY, code TEXT UNIQUE NOT NULL, type TEXT NOT NULL, value NUMERIC(10,2) NOT NULL,
+            max_uses INTEGER, used INTEGER NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ, product_ids INTEGER[],
+            active BOOLEAN NOT NULL DEFAULT TRUE, note TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT NOW())`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_audit (
+            id SERIAL PRIMARY KEY, actor_id TEXT, actor_name TEXT, action TEXT, target TEXT, detail TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+        await db.query(`CREATE TABLE IF NOT EXISTS store_admins (
+            discord_id TEXT PRIMARY KEY, perms TEXT[] NOT NULL DEFAULT '{}', added_by TEXT, created_at TIMESTAMP DEFAULT NOW())`);
+        const seeded = await db.query("SELECT 1 FROM store_settings WHERE key='base_seeded'");
+        if (!seeded.rows.length) {      // أرقام المبيعات السابقة (قبل الموقع الجديد) — تُضبط مرة واحدة فقط
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('customers_base','113') ON CONFLICT (key) DO NOTHING");
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('base_since', NOW()::text) ON CONFLICT (key) DO NOTHING");
+            for (const [plan, n] of [["CA-1", 29], ["CA-2", 26], ["CA-3", 25], ["CA-4", 26], ["CA-5", 7]])
+                await db.query("UPDATE store_products SET sold_base=$1 WHERE plan=$2", [n, plan]);
+            await db.query("INSERT INTO store_settings(key,value) VALUES ('base_seeded','1') ON CONFLICT (key) DO NOTHING");
+        }
+        // صور قبل/بعد الافتراضية لنسخ CA-1..CA-5 (مرة واحدة، لا تمس ما ضبطته يدوياً)
+        if (!(await db.query("SELECT 1 FROM store_settings WHERE key='compare_seeded'")).rows.length) {
+        for (const n of [1, 2, 3, 4, 5])
+            await db.query(
+                `UPDATE store_products SET media = jsonb_set(COALESCE(media,'{}'::jsonb), '{compare}', $1::jsonb)
+                 WHERE plan=$2 AND (media->'compare' IS NULL OR jsonb_array_length(media->'compare')=0)`,
+                [JSON.stringify([{ before: `CA-${n}-BEFORE.png`, after: `CA-${n}-AFTER.png`, label: `CA-${n}` }]), `CA-${n}`]);
+        await db.query("INSERT INTO store_settings(key,value) VALUES ('compare_seeded','1') ON CONFLICT (key) DO NOTHING");
+        }
+        await loadStoreAdmins();
     } catch (err) { console.error("Store init error:", err); }
 })();
 
 /* ── helpers ── */
 const PRODUCT_STATUSES = ["available", "out", "hidden"];
 
+const offerActive = (r) => !!(r.offer_ends_at && new Date(r.offer_ends_at) > new Date());
+// بعد انتهاء العرض يعود السعر تلقائياً للسعر القديم (الأصلي)
+const effPrice = (r) => (r.offer_ends_at && !offerActive(r) && r.old_price != null) ? Number(r.old_price) : Number(r.price);
+const round2 = (n) => Math.round(n * 100) / 100;
+
 function productRow(r) {
+    const act = offerActive(r), expired = !!r.offer_ends_at && !act;
     return {
-        id: r.id, title: r.title, description: r.description,
-        price: Number(r.price), oldPrice: r.old_price == null ? null : Number(r.old_price),
+        id: r.id, title: r.title, titleEn: r.title_en || "", description: r.description, descriptionEn: r.description_en || "",
+        price: effPrice(r), oldPrice: expired || r.old_price == null ? null : Number(r.old_price),
+        offerEndsAt: act ? new Date(r.offer_ends_at).toISOString() : null,
         image: r.image, category: r.category, status: r.status, plan: r.plan,
         paymentUrl: r.status === "available" ? r.payment_url : null,
         isSupport: r.is_support, featured: r.featured, sortOrder: r.sort_order,
+        sold: Number(r.sold || 0), media: r.media && typeof r.media === "object" ? r.media : {},
         rating: { avg: r.avg == null ? 0 : Number(Number(r.avg).toFixed(1)), count: r.cnt == null ? 0 : Number(r.cnt) },
         createdAt: r.created_at
     };
 }
 const PRODUCT_SELECT = `
-    SELECT p.*, r.avg, r.cnt FROM store_products p
-    LEFT JOIN (SELECT product_id, AVG(rating) AS avg, COUNT(*) AS cnt FROM store_reviews GROUP BY product_id) r ON r.product_id = p.id`;
+    SELECT p.*, r.avg, r.cnt, (p.sold_base + COALESCE(sp.c, 0))::int AS sold FROM store_products p
+    LEFT JOIN (SELECT product_id, AVG(rating) AS avg, COUNT(*) AS cnt FROM store_reviews GROUP BY product_id) r ON r.product_id = p.id
+    LEFT JOIN (SELECT product_id, COUNT(*) AS c FROM store_purchases
+               WHERE created_at >= COALESCE((SELECT value::timestamp FROM store_settings WHERE key='base_since'), 'epoch'::timestamp)
+               GROUP BY product_id) sp ON sp.product_id = p.id`;
+
+/* وسائط المنتج: معرض صور/فيديو + صور قبل/بعد */
+function mediaItem(u) {
+    u = String(u || "").trim(); if (!u || u.length > 500) return null;
+    const y = u.match(/^https:\/\/(?:www\.)?(?:youtube\.com\/watch\?(?:[^#\s]*&)?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/shorts\/)([\w-]{11})/i);
+    if (y) return { type: "youtube", url: y[1] };
+    if (/^https:\/\/[^\s"'<>]+$/.test(u) || /^[\w\-. ()]+\.(png|jpe?g|webp|gif|avif|mp4|webm)$/i.test(u))
+        return { type: /\.(mp4|webm)(\?.*)?$/i.test(u) ? "video" : "image", url: u };
+    return null;
+}
+function cleanMedia(m) {
+    m = m && typeof m === "object" ? m : {};
+    const gallery = [];
+    for (const x of (Array.isArray(m.gallery) ? m.gallery : []).slice(0, 12)) {
+        const it = mediaItem(typeof x === "string" ? x : x && x.url);
+        if (!it) return { error: "رابط وسائط غير صالح في المعرض: " + String(typeof x === "string" ? x : x && x.url).slice(0, 60) };
+        gallery.push(it);
+    }
+    const compare = [];
+    for (const c of (Array.isArray(m.compare) ? m.compare : []).slice(0, 6)) {
+        const b = mediaItem(c && c.before), a = mediaItem(c && c.after);
+        if (!b || !a || b.type !== "image" || a.type !== "image") return { error: "صورة قبل/بعد غير صالحة (يجب أن تكون صورة)" };
+        compare.push({ before: b.url, after: a.url, label: String((c && c.label) || "").slice(0, 60) });
+    }
+    return { value: { gallery, compare } };
+}
 
 function reviewRow(r) {
     return {
@@ -1502,10 +1610,15 @@ function authUser(required) {
         }
     };
 }
-const requireAdmin = [storeAdminLimiter, authUser(true), (req, res, next) => {
-    if (!isStoreAdmin(req.user.discordId)) return res.status(403).json({ success: false, message: "غير مصرح" });
-    next();
-}];
+function adminGuard(perm) {
+    return [storeAdminLimiter, authUser(true), (req, res, next) => {
+        const id = req.user.discordId;
+        const ok = perm === "main" ? isMainAdmin(id) : perm === "any" ? isStoreAdmin(id) : hasPerm(id, perm);
+        if (!ok) return res.status(403).json({ success: false, message: "غير مصرح" });
+        next();
+    }];
+}
+const requireAdmin = adminGuard("any");
 
 async function fetchDiscordProfile(discordId) {
     try {
@@ -1561,6 +1674,15 @@ function cleanProduct(b, partial = false) {
             out.payment_url = parsed.toString().length > 600 ? null : parsed.toString();
         } else out.payment_url = null;
     }
+    if (!partial || b.titleEn !== undefined) out.title_en = str(b.titleEn).slice(0, 160);
+    if (!partial || b.descriptionEn !== undefined) out.description_en = typeof b.descriptionEn === "string" ? b.descriptionEn.slice(0, 8000) : "";
+    if (!partial || b.offerEndsAt !== undefined) {
+        const v = b.offerEndsAt;
+        if (v === null || v === "" || v === undefined) out.offer_ends_at = null;
+        else { const d = new Date(v); if (isNaN(d.getTime())) return { error: "تاريخ نهاية العرض غير صالح" }; out.offer_ends_at = d.toISOString(); }
+    }
+    if (!partial || b.soldBase !== undefined) { const n = parseInt(b.soldBase, 10); out.sold_base = isFinite(n) && n >= 0 && n <= 1000000 ? n : 0; }
+    if (!partial || b.media !== undefined) { const m = cleanMedia(b.media); if (m.error) return m; out.media = JSON.stringify(m.value); }
     return { value: out };
 }
 
@@ -1570,13 +1692,6 @@ app.get("/api/store/products", storeReadLimiter, async (req, res) => {
         const r = await db.query(`${PRODUCT_SELECT} WHERE p.status <> 'hidden' ORDER BY p.sort_order ASC, p.id ASC`);
         res.json({ success: true, products: r.rows.map(productRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ في جلب المنتجات" }); }
-});
-
-app.get("/api/store/me", storeReadLimiter, authUser(true), async (req, res) => {
-    const prof = await fetchDiscordProfile(req.user.discordId);
-    let plans = [];
-    try { plans = (await getPlansFromDiscord(req.user.discordId)) || []; } catch {}
-    res.json({ success: true, discordId: req.user.discordId, username: prof.username, avatar: prof.avatar, plans, isAdmin: isStoreAdmin(req.user.discordId) });
 });
 
 app.get("/api/store/reviews", storeReadLimiter, async (req, res) => {
@@ -1600,7 +1715,7 @@ app.get("/api/store/products/:id/reviews", storeReadLimiter, authUser(false), as
         rv.rows.forEach(x => { dist[x.rating - 1]++; sum += x.rating; });
         const me = { loggedIn: !!req.user, isAdmin: false, canReview: false, myReview: null, reason: req.user ? "" : "login" };
         if (req.user) {
-            me.isAdmin = isStoreAdmin(req.user.discordId);
+            me.isAdmin = hasPerm(req.user.discordId, "reviews");
             const mine = rv.rows.find(x => x.discord_id === req.user.discordId);
             me.myReview = mine ? { id: mine.id, rating: mine.rating, comment: mine.comment } : null;
             me.canReview = await userOwnsProduct(req.user.discordId, pr.rows[0]);
@@ -1629,11 +1744,16 @@ app.post("/api/store/reviews", storeReviewLimiter, authUser(true), async (req, r
             return res.status(403).json({ success: false, message: "التقييم متاح فقط لمن اشترى هذا المنتج" });
         }
         const prof = await fetchDiscordProfile(req.user.discordId);
+        const prev = await db.query("SELECT 1 FROM store_reviews WHERE product_id=$1 AND discord_id=$2", [productId, req.user.discordId]);
         await db.query(
             `INSERT INTO store_reviews (product_id, discord_id, username, avatar, rating, comment)
              VALUES ($1,$2,$3,$4,$5,$6)
              ON CONFLICT (product_id, discord_id) DO UPDATE SET rating=EXCLUDED.rating, comment=EXCLUDED.comment, username=EXCLUDED.username, avatar=EXCLUDED.avatar, created_at=NOW()`,
             [productId, req.user.discordId, prof.username, prof.avatar, rating, comment]);
+        try {
+            const ag = await db.query("SELECT ROUND(AVG(rating)::numeric,1) AS avg, COUNT(*)::int AS c FROM store_reviews WHERE product_id=$1", [productId]);
+            notifyStore(reviewEmbed({ isUpdate: prev.rows.length > 0, product: pr.rows[0], rating, comment, userId: req.user.discordId, username: prof.username, avatar: prof.avatar, avg: ag.rows[0].avg, count: ag.rows[0].c }), reviewButtons(productId));
+        } catch (e) { console.error("review notify error:", e.message); }
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر إرسال التقييم" }); }
 });
@@ -1641,24 +1761,104 @@ app.post("/api/store/reviews", storeReviewLimiter, authUser(true), async (req, r
 app.delete("/api/store/reviews/:id", storeReviewLimiter, authUser(true), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
-        const r = await db.query("SELECT * FROM store_reviews WHERE id=$1", [id]);
+        const r = await db.query("SELECT v.*, p.title AS product_title FROM store_reviews v LEFT JOIN store_products p ON p.id=v.product_id WHERE v.id=$1", [id]);
         if (!r.rows.length) return res.json({ success: false, message: "التقييم غير موجود" });
-        if (r.rows[0].discord_id !== req.user.discordId && !isStoreAdmin(req.user.discordId)) return res.status(403).json({ success: false, message: "غير مصرح" });
+        const own = r.rows[0].discord_id === req.user.discordId;
+        if (!own && !hasPerm(req.user.discordId, "reviews")) return res.status(403).json({ success: false, message: "غير مصرح" });
         await db.query("DELETE FROM store_reviews WHERE id=$1", [id]);
+        if (!own) await audit(req, "حذف تقييم", r.rows[0].product_title || r.rows[0].product_id, `${r.rows[0].username} (${r.rows[0].rating}★): ${String(r.rows[0].comment).slice(0, 120)}`);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
 });
 
+/* ── إشعارات ديسكورد (تقييمات + مبيعات الموقع) ── */
+const STORE_NOTIFY_CHANNEL_ID = process.env.STORE_NOTIFY_CHANNEL_ID || "1480229260466852092";
+async function notifyStore(embed, components) {
+    try {
+        if (!STORE_NOTIFY_CHANNEL_ID || !DISCORD_BOT_TOKEN) return;
+        const r = await fetch(`https://discord.com/api/v10/channels/${STORE_NOTIFY_CHANNEL_ID}/messages`, {
+            method: "POST",
+            headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ embeds: [embed], components: components || [], allowed_mentions: { parse: [] } })
+        });
+        if (r && r.ok === false) console.error("⚠️ store notify failed:", r.status, await r.text().catch(() => ""));
+    } catch (e) { console.error("⚠️ store notify error:", e.message); }
+}
+const clean = (s, n) => String(s || "").replace(/`/g, "'").slice(0, n);
+const RATING_META = {
+    5: { color: 0x3DDC97, label: "ممتاز" }, 4: { color: 0x9BE15D, label: "جيد جداً" },
+    3: { color: 0xF5B84A, label: "جيد" },    2: { color: 0xF08A4B, label: "مقبول" }, 1: { color: 0xE5484D, label: "ضعيف" }
+};
+function productImageUrl(img) {
+    if (!img) return undefined;
+    if (/^https:\/\//.test(img)) return img;
+    return `${WEBSITE_URL.replace(/\/$/, "")}/assets/products/${encodeURIComponent(img)}`;
+}
+function reviewEmbed({ isUpdate, product, rating, comment, userId, username, avatar, avg, count }) {
+    const meta = RATING_META[rating] || RATING_META[5];
+    const stars = "⭐".repeat(rating) + "▫️".repeat(5 - rating);
+    const quote = comment ? ">>> " + clean(comment, 900) : "*لم يترك العميل تعليقاً.*";
+    const fields = [
+        { name: "👤 العميل", value: `<@${userId}>`, inline: true },
+        { name: "🏷️ النسخة", value: product.plan ? `\`${product.plan}\`` : "—", inline: true },
+        { name: "📊 متوسط المنتج", value: count ? `**${avg}** / 5  ·  ${count} تقييم` : "—", inline: true }
+    ];
+    return {
+        author: { name: `${clean(username, 40) || "عميل"}  •  ${isUpdate ? "عدّل تقييمه" : "تقييم جديد"}`, icon_url: avatar || undefined },
+        title: clean(product.title, 200),
+        url: `${WEBSITE_URL}/product.html?id=${product.id}`,
+        color: meta.color,
+        description: `${stars}\n**${rating}/5 — ${meta.label}**\n\n${quote}`,
+        fields,
+        thumbnail: productImageUrl(product.image) ? { url: productImageUrl(product.image) } : undefined,
+        footer: { text: "CA Store  •  تقييمات العملاء  •  مشتري موثّق ✅" },
+        timestamp: new Date().toISOString()
+    };
+}
+function reviewButtons(productId) {
+    return [{ type: 1, components: [
+        { type: 2, style: 5, label: "عرض المنتج", url: `${WEBSITE_URL}/product.html?id=${productId}` },
+        { type: 2, style: 5, label: "كل التقييمات", url: `${WEBSITE_URL}/reviews.html` }
+    ] }];
+}
+
+/* ── سجل العمليات ── */
+const _nameCache = new Map();
+async function actorName(id) {
+    if (_nameCache.has(id)) return _nameCache.get(id);
+    const p = await fetchDiscordProfile(id); _nameCache.set(id, p.username); return p.username;
+}
+async function audit(req, action, target, detail) {
+    try {
+        const id = req.user.discordId;
+        await db.query("INSERT INTO store_audit (actor_id, actor_name, action, target, detail) VALUES ($1,$2,$3,$4,$5)",
+            [id, await actorName(id), action, String(target || "").slice(0, 200), String(detail || "").slice(0, 1000)]);
+    } catch (e) { console.error("audit error:", e.message); }
+}
+const AUDIT_LABELS = { title: "الاسم", price: "السعر", old_price: "السعر القديم", status: "الحالة", payment_url: "رابط الدفع", offer_ends_at: "نهاية العرض", sold_base: "المبيعات الأساسية", featured: "مميّز", category: "التصنيف", plan: "النسخة", image: "الصورة", description: "الوصف", title_en: "الاسم EN", description_en: "الوصف EN", media: "الوسائط", is_support: "دعم", sort_order: "الترتيب" };
+function diffText(cur, v) {
+    const norm = (k, x) => x == null ? "" : x instanceof Date ? x.toISOString() : (k === "price" || k === "old_price") ? String(Number(x)) : typeof x === "object" ? JSON.stringify(x) : String(x);
+    const show = ["title", "price", "old_price", "status", "offer_ends_at", "sold_base", "category", "plan", "featured"];
+    const out = [];
+    for (const k of Object.keys(v)) {
+        const a = norm(k, cur[k]), b = norm(k, v[k]);
+        if (a === b) continue;
+        out.push(show.includes(k) ? `${AUDIT_LABELS[k] || k}: ${a || "—"} ← ${b || "—"}` : `${AUDIT_LABELS[k] || k} (تغيّر)`);
+    }
+    return out.join(" | ");
+}
+
 /* ── ADMIN ── */
-app.get("/api/admin/store/products", requireAdmin, async (req, res) => {
+const adminProductRow = (x) => ({ ...productRow(x), paymentUrl: x.payment_url, rawPrice: Number(x.price), rawOldPrice: x.old_price == null ? null : Number(x.old_price), rawOfferEndsAt: x.offer_ends_at ? new Date(x.offer_ends_at).toISOString() : null, offerExpired: !!x.offer_ends_at && !offerActive(x), soldBase: x.sold_base });
+
+app.get("/api/admin/store/products", adminGuard("products"), async (req, res) => {
     try {
         const r = await db.query(`${PRODUCT_SELECT} ORDER BY p.sort_order ASC, p.id ASC`);
-        // الأدمن يرى رابط الدفع دائماً حتى للمنتجات غير المتوفرة
-        res.json({ success: true, products: r.rows.map(x => ({ ...productRow(x), paymentUrl: x.payment_url })) });
+        res.json({ success: true, products: r.rows.map(adminProductRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-app.post("/api/admin/store/products", requireAdmin, async (req, res) => {
+app.post("/api/admin/store/products", adminGuard("products"), async (req, res) => {
     try {
         const c = cleanProduct(req.body);
         if (c.error) return res.json({ success: false, message: c.error });
@@ -1667,14 +1867,15 @@ app.post("/api/admin/store/products", requireAdmin, async (req, res) => {
         const next = await db.query("SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM store_products");
         if (req.body.sortOrder === undefined || req.body.sortOrder === "") v.sort_order = next.rows[0].n;
         const r = await db.query(
-            `INSERT INTO store_products (title,description,price,old_price,image,category,status,plan,payment_url,is_support,featured,sort_order)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-            [v.title, v.description, v.price, v.old_price, v.image, v.category, v.status, v.plan, v.payment_url, v.is_support, v.featured, v.sort_order]);
+            `INSERT INTO store_products (title,description,price,old_price,image,category,status,plan,payment_url,is_support,featured,sort_order,title_en,description_en,offer_ends_at,sold_base,media)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+            [v.title, v.description, v.price, v.old_price, v.image, v.category, v.status, v.plan, v.payment_url, v.is_support, v.featured, v.sort_order, v.title_en, v.description_en, v.offer_ends_at, v.sold_base, v.media]);
+        await audit(req, "إضافة منتج", v.title, `السعر $${v.price} — الحالة: ${v.status}`);
         res.json({ success: true, id: r.rows[0].id });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر إضافة المنتج" }); }
 });
 
-app.put("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
+app.put("/api/admin/store/products/:id", adminGuard("products"), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
         const cur = await db.query("SELECT * FROM store_products WHERE id=$1", [id]);
@@ -1687,64 +1888,183 @@ app.put("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
         if (finalStatus === "available" && !finalUrl) return res.json({ success: false, message: "رابط الدفع مطلوب للمنتج المتوفر" });
         const keys = Object.keys(v);
         if (!keys.length) return res.json({ success: true });
+        const diff = diffText(cur.rows[0], v);
         const sets = keys.map((k, i) => `${k}=$${i + 1}`).join(", ");
         await db.query(`UPDATE store_products SET ${sets}, updated_at=NOW() WHERE id=$${keys.length + 1}`, [...keys.map(k => v[k]), id]);
+        if (diff && !(keys.length === 1 && keys[0] === "sort_order")) await audit(req, "تعديل منتج", cur.rows[0].title, diff);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر تعديل المنتج" }); }
 });
 
-app.delete("/api/admin/store/products/:id", requireAdmin, async (req, res) => {
+app.delete("/api/admin/store/products/:id", adminGuard("products"), async (req, res) => {
     try {
         const id = parseInt(req.params.id, 10);
+        const cur = await db.query("SELECT title FROM store_products WHERE id=$1", [id]);
         await db.query("DELETE FROM store_reviews WHERE product_id=$1", [id]);
         await db.query("UPDATE store_purchases SET product_id=NULL WHERE product_id=$1", [id]);
         const r = await db.query("DELETE FROM store_products WHERE id=$1", [id]);
+        if (r.rowCount) await audit(req, "حذف منتج", cur.rows[0] ? cur.rows[0].title : id, "");
         res.json({ success: r.rowCount > 0, message: r.rowCount ? undefined : "المنتج غير موجود" });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر حذف المنتج" }); }
 });
 
-app.get("/api/admin/store/reviews", requireAdmin, async (req, res) => {
+app.get("/api/admin/store/reviews", adminGuard("reviews"), async (req, res) => {
     try {
         const r = await db.query(`SELECT v.*, p.title AS product_title FROM store_reviews v LEFT JOIN store_products p ON p.id = v.product_id ORDER BY v.created_at DESC LIMIT 500`);
         res.json({ success: true, reviews: r.rows.map(reviewRow) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-app.get("/api/admin/store/purchases", requireAdmin, async (req, res) => {
+app.get("/api/admin/store/purchases", adminGuard("purchases"), async (req, res) => {
     try {
         const r = await db.query(`SELECT s.*, p.title AS product_title FROM store_purchases s LEFT JOIN store_products p ON p.id = s.product_id ORDER BY s.created_at DESC LIMIT 300`);
-        res.json({ success: true, purchases: r.rows.map(x => ({ id: x.id, discordId: x.discord_id, productId: x.product_id, productTitle: x.product_title, plan: x.plan, amount: x.amount, method: x.method, source: x.source, createdAt: x.created_at })) });
+        res.json({ success: true, purchases: r.rows.map(x => ({ id: x.id, discordId: x.discord_id, productId: x.product_id, productTitle: x.product_title, plan: x.plan, amount: x.amount, method: x.method, source: x.source, couponCode: x.coupon_code, discount: x.discount, createdAt: x.created_at })) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
-/* إضافة شراء يدوياً (مثلاً للمنتجات التي لا تمنح رتبة تلقائياً) → يسمح للعميل بالتقييم */
-app.post("/api/admin/store/purchases", requireAdmin, async (req, res) => {
+/* إضافة شراء يدوياً (مثلاً للدفع بالبطاقة عبر الرابط البديل) → يسمح للعميل بالتقييم */
+app.post("/api/admin/store/purchases", adminGuard("purchases"), async (req, res) => {
     try {
         const discordId = String(req.body.discordId || "").trim();
         const productId = parseInt(req.body.productId, 10);
         if (!/^\d{15,22}$/.test(discordId) || !productId) return res.json({ success: false, message: "أدخل آيدي ديسكورد صحيح واختر المنتج" });
-        const p = await db.query("SELECT id, plan, price FROM store_products WHERE id=$1", [productId]);
+        const p = await db.query("SELECT id, title, plan, price FROM store_products WHERE id=$1", [productId]);
         if (!p.rows.length) return res.json({ success: false, message: "المنتج غير موجود" });
         await db.query("INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source) VALUES ($1,$2,$3,$4,$5,'admin')",
             [discordId, productId, p.rows[0].plan, String(p.rows[0].price), "Manual"]);
+        await audit(req, "تسجيل شراء يدوي", p.rows[0].title, `العميل: ${discordId}`);
         res.json({ success: true });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإضافة" }); }
 });
 
-app.delete("/api/admin/store/purchases/:id", requireAdmin, async (req, res) => {
-    try { await db.query("DELETE FROM store_purchases WHERE id=$1", [parseInt(req.params.id, 10)]); res.json({ success: true }); }
-    catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
+app.delete("/api/admin/store/purchases/:id", adminGuard("purchases"), async (req, res) => {
+    try {
+        const r = await db.query("DELETE FROM store_purchases WHERE id=$1 RETURNING discord_id, plan, amount", [parseInt(req.params.id, 10)]);
+        if (r.rows[0]) await audit(req, "حذف سجل شراء", r.rows[0].discord_id, `${r.rows[0].plan || ""} $${r.rows[0].amount || ""}`);
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
 });
 
 app.get("/api/admin/store/stats", requireAdmin, async (req, res) => {
     try {
-        const [p, r, s, rev] = await Promise.all([
+        const [p, r, s, rev, cp] = await Promise.all([
             db.query("SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status='available')::int AS available FROM store_products"),
             db.query("SELECT COUNT(*)::int AS cnt, COALESCE(AVG(rating),0) AS avg FROM store_reviews"),
             db.query("SELECT COUNT(*)::int AS cnt FROM store_purchases"),
-            db.query("SELECT COALESCE(SUM(NULLIF(regexp_replace(amount,'[^0-9.]','','g'),'')::numeric),0) AS total FROM store_purchases")
+            db.query("SELECT COALESCE(SUM(NULLIF(regexp_replace(amount,'[^0-9.]','','g'),'')::numeric),0) AS total FROM store_purchases"),
+            db.query("SELECT COUNT(*) FILTER (WHERE active AND (expires_at IS NULL OR expires_at > NOW()))::int AS live FROM store_coupons")
         ]);
-        res.json({ success: true, stats: { products: p.rows[0].total, available: p.rows[0].available, reviews: r.rows[0].cnt, avgRating: Number(Number(r.rows[0].avg).toFixed(1)), purchases: s.rows[0].cnt, revenue: Number(rev.rows[0].total) } });
+        res.json({ success: true, stats: { products: p.rows[0].total, available: p.rows[0].available, reviews: r.rows[0].cnt, avgRating: Number(Number(r.rows[0].avg).toFixed(1)), purchases: s.rows[0].cnt, revenue: Number(rev.rows[0].total), liveCoupons: cp.rows[0].live } });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+
+/* ── كوبونات الخصم ── */
+const couponRow = (c) => ({ id: c.id, code: c.code, type: c.type, value: Number(c.value), maxUses: c.max_uses, used: c.used, expiresAt: c.expires_at ? new Date(c.expires_at).toISOString() : null, productIds: c.product_ids || [], active: c.active, note: c.note, createdAt: c.created_at });
+function cleanCoupon(b, partial = false) {
+    const out = {};
+    if (!partial || b.code !== undefined) { const code = String(b.code || "").trim().toUpperCase(); if (!/^[A-Z0-9_-]{3,24}$/.test(code)) return { error: "الكود: 3-24 حرفاً إنجليزياً أو أرقام (يسمح بـ - و _)" }; out.code = code; }
+    if (!partial || b.type !== undefined) { if (!["percent", "fixed"].includes(b.type)) return { error: "نوع الخصم غير صالح" }; out.type = b.type; }
+    if (!partial || b.value !== undefined) {
+        const n = Number(b.value); const t = out.type || b.type;
+        if (!isFinite(n) || n <= 0) return { error: "قيمة الخصم غير صالحة" };
+        if (t === "percent" && n > 95) return { error: "نسبة الخصم لا تتجاوز 95%" };
+        if (n > 10000) return { error: "قيمة الخصم كبيرة جداً" };
+        out.value = round2(n);
+    }
+    if (!partial || b.maxUses !== undefined) { if (b.maxUses === null || b.maxUses === "" || b.maxUses === undefined) out.max_uses = null; else { const n = parseInt(b.maxUses, 10); if (!(n >= 1 && n <= 1000000)) return { error: "عدد الاستخدامات غير صالح" }; out.max_uses = n; } }
+    if (!partial || b.expiresAt !== undefined) { if (!b.expiresAt) out.expires_at = null; else { const d = new Date(b.expiresAt); if (isNaN(d.getTime())) return { error: "تاريخ الانتهاء غير صالح" }; out.expires_at = d.toISOString(); } }
+    if (!partial || b.productIds !== undefined) { const a = Array.isArray(b.productIds) ? b.productIds.map(x => parseInt(x, 10)).filter(x => x > 0) : []; out.product_ids = a.length ? a : null; }
+    if (!partial || b.active !== undefined) out.active = b.active === undefined ? true : !!b.active;
+    if (!partial || b.note !== undefined) out.note = String(b.note || "").slice(0, 120);
+    return { value: out };
+}
+app.get("/api/admin/store/coupons", adminGuard("coupons"), async (req, res) => {
+    try { const r = await db.query("SELECT * FROM store_coupons ORDER BY created_at DESC"); res.json({ success: true, coupons: r.rows.map(couponRow) }); }
+    catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.post("/api/admin/store/coupons", adminGuard("coupons"), async (req, res) => {
+    try {
+        const c = cleanCoupon(req.body); if (c.error) return res.json({ success: false, message: c.error });
+        const v = c.value;
+        await db.query(`INSERT INTO store_coupons (code,type,value,max_uses,expires_at,product_ids,active,note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [v.code, v.type, v.value, v.max_uses, v.expires_at, v.product_ids, v.active, v.note]);
+        await audit(req, "إنشاء كوبون", v.code, `${v.type === "percent" ? v.value + "%" : "$" + v.value}`);
+        res.json({ success: true });
+    } catch (err) {
+        if (err.code === "23505") return res.json({ success: false, message: "هذا الكود موجود مسبقاً" });
+        console.error(err); res.status(500).json({ success: false, message: "تعذّر إنشاء الكوبون" });
+    }
+});
+app.put("/api/admin/store/coupons/:id", adminGuard("coupons"), async (req, res) => {
+    try {
+        const id = parseInt(req.params.id, 10);
+        const cur = await db.query("SELECT * FROM store_coupons WHERE id=$1", [id]); if (!cur.rows.length) return res.json({ success: false, message: "الكوبون غير موجود" });
+        const c = cleanCoupon({ type: cur.rows[0].type, ...req.body }, true); if (c.error) return res.json({ success: false, message: c.error });
+        const v = c.value; delete v.code; delete v.type;
+        const keys = Object.keys(v); if (!keys.length) return res.json({ success: true });
+        await db.query(`UPDATE store_coupons SET ${keys.map((k, i) => `${k}=$${i + 1}`).join(", ")} WHERE id=$${keys.length + 1}`, [...keys.map(k => v[k]), id]);
+        await audit(req, "تعديل كوبون", cur.rows[0].code, keys.join(", "));
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر التعديل" }); }
+});
+app.delete("/api/admin/store/coupons/:id", adminGuard("coupons"), async (req, res) => {
+    try {
+        const r = await db.query("DELETE FROM store_coupons WHERE id=$1 RETURNING code", [parseInt(req.params.id, 10)]);
+        if (r.rows[0]) await audit(req, "حذف كوبون", r.rows[0].code, "");
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحذف" }); }
+});
+
+/* ── إعدادات عامة ── */
+async function getSetting(key, def = null) { const r = await db.query("SELECT value FROM store_settings WHERE key=$1", [key]); return r.rows.length ? r.rows[0].value : def; }
+app.get("/api/admin/store/settings", adminGuard("settings"), async (req, res) => {
+    try { res.json({ success: true, settings: { customersBase: Number(await getSetting("customers_base", "0")), baseSince: await getSetting("base_since", null) } }); }
+    catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.put("/api/admin/store/settings", adminGuard("settings"), async (req, res) => {
+    try {
+        const n = parseInt(req.body.customersBase, 10);
+        if (!(n >= 0 && n <= 10000000)) return res.json({ success: false, message: "الرقم غير صالح" });
+        const old = await getSetting("customers_base", "0");
+        await db.query("INSERT INTO store_settings(key,value) VALUES ('customers_base',$1) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [String(n)]);
+        await audit(req, "تعديل الإعدادات", "عدد العملاء الأساسي", `${old} ← ${n}`);
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر الحفظ" }); }
+});
+
+/* ── إدارة الأدمنز + سجل العمليات (للأدمن الأساسي فقط) ── */
+app.get("/api/admin/store/admins", adminGuard("main"), async (req, res) => {
+    try {
+        const r = await db.query("SELECT * FROM store_admins ORDER BY created_at");
+        const list = await Promise.all(r.rows.map(async x => ({ discordId: x.discord_id, perms: x.perms || [], username: (await fetchDiscordProfile(x.discord_id)).username, createdAt: x.created_at })));
+        res.json({ success: true, admins: list, allPerms: ALL_PERMS, mainAdmin: MAIN_ADMIN_ID });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+app.post("/api/admin/store/admins", adminGuard("main"), async (req, res) => {
+    try {
+        const id = String(req.body.discordId || "").trim();
+        if (!/^\d{15,22}$/.test(id)) return res.json({ success: false, message: "آيدي ديسكورد غير صحيح" });
+        if (isMainAdmin(id)) return res.json({ success: false, message: "هذا هو الأدمن الأساسي" });
+        const perms = (Array.isArray(req.body.perms) ? req.body.perms : []).filter(p => ALL_PERMS.includes(p));
+        if (!perms.length) return res.json({ success: false, message: "اختر صلاحية واحدة على الأقل" });
+        await db.query(`INSERT INTO store_admins (discord_id, perms, added_by) VALUES ($1,$2,$3) ON CONFLICT (discord_id) DO UPDATE SET perms=EXCLUDED.perms`, [id, perms, req.user.discordId]);
+        await loadStoreAdmins();
+        await audit(req, "إضافة/تعديل أدمن", id, perms.join(", "));
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإضافة" }); }
+});
+app.delete("/api/admin/store/admins/:id", adminGuard("main"), async (req, res) => {
+    try {
+        const id = String(req.params.id);
+        await db.query("DELETE FROM store_admins WHERE discord_id=$1", [id]); await loadStoreAdmins();
+        await audit(req, "إزالة أدمن", id, "");
+        res.json({ success: true });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّرت الإزالة" }); }
+});
+app.get("/api/admin/store/audit", adminGuard("main"), async (req, res) => {
+    try {
+        const r = await db.query("SELECT * FROM store_audit ORDER BY created_at DESC, id DESC LIMIT 300");
+        res.json({ success: true, logs: r.rows.map(x => ({ id: x.id, actorId: x.actor_id, actor: x.actor_name, action: x.action, target: x.target, detail: x.detail, createdAt: x.created_at })) });
     } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
 });
 
@@ -1792,7 +2112,86 @@ function ensureCheckoutSchema() {
 // هل الدفع التلقائي مفعّل؟ (الموقع يستخدمه ليقرر الطريقة)
 app.get("/api/store/checkout/status", (req, res) => res.json({ success: true, enabled: !!(PAYPAL_CLIENT_ID && PAYPAL_CLIENT_SECRET) }));
 
-// إنشاء طلب دفع وإرجاع رابط PayPal
+app.get("/api/store/me", storeReadLimiter, authUser(true), async (req, res) => {
+    const prof = await fetchDiscordProfile(req.user.discordId);
+    let plans = [];
+    try { plans = (await getPlansFromDiscord(req.user.discordId)) || []; } catch {}
+    const perms = getPerms(req.user.discordId);
+    res.json({ success: true, discordId: req.user.discordId, username: prof.username, avatar: prof.avatar, plans, isAdmin: perms.length > 0, perms, isMain: isMainAdmin(req.user.discordId) });
+});
+
+/* أرقام عامة للرئيسية: العملاء + المبيعات + التقييم */
+app.get("/api/store/public-stats", storeReadLimiter, async (req, res) => {
+    try {
+        const since = `COALESCE((SELECT value::timestamp FROM store_settings WHERE key='base_since'), 'epoch'::timestamp)`;
+        const [base, buyers, sales, base2, rv] = await Promise.all([
+            getSetting("customers_base", "0"),
+            db.query(`SELECT COUNT(DISTINCT discord_id)::int AS n FROM store_purchases WHERE created_at >= ${since}`),
+            db.query(`SELECT COUNT(*)::int AS n FROM store_purchases WHERE created_at >= ${since}`),
+            db.query(`SELECT COALESCE(SUM(sold_base),0)::int AS n FROM store_products`),
+            db.query(`SELECT COALESCE(AVG(rating),0) AS avg, COUNT(*)::int AS cnt FROM store_reviews`)
+        ]);
+        res.json({ success: true, customers: Number(base) + buyers.rows[0].n, sales: base2.rows[0].n + sales.rows[0].n, reviews: { avg: Number(Number(rv.rows[0].avg).toFixed(1)), count: rv.rows[0].cnt } });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "خطأ" }); }
+});
+
+/* ── كوبونات (جهة العميل) ── */
+async function evalCoupon(codeRaw, prod, discordId) {
+    const code = String(codeRaw || "").trim().toUpperCase();
+    if (!/^[A-Z0-9_-]{3,24}$/.test(code)) return { error: "كود الخصم غير صالح" };
+    const r = await db.query("SELECT * FROM store_coupons WHERE code=$1", [code]);
+    const c = r.rows[0];
+    if (!c || !c.active) return { error: "كود الخصم غير صحيح" };
+    if (c.expires_at && new Date(c.expires_at) <= new Date()) return { error: "انتهت صلاحية كود الخصم" };
+    if (c.max_uses != null && c.used >= c.max_uses) return { error: "تم استنفاد هذا الكود" };
+    if (c.product_ids && c.product_ids.length && !c.product_ids.includes(prod.id)) return { error: "هذا الكود لا ينطبق على هذا المنتج" };
+    const used = await db.query("SELECT 1 FROM store_purchases WHERE discord_id=$1 AND coupon_code=$2 LIMIT 1", [discordId, code]);
+    if (used.rows.length) return { error: "استخدمت هذا الكود من قبل" };
+    const base = effPrice(prod);
+    let disc = c.type === "percent" ? round2(base * Number(c.value) / 100) : Math.min(Number(c.value), base);
+    let final = round2(base - disc);
+    if (final < 1) { final = Math.min(1, base); disc = round2(base - final); }     // حد أدنى للسعر النهائي: 1$
+    return { coupon: c, code, base, discount: disc, final };
+}
+app.post("/api/store/coupons/validate", checkoutLimiter, authUser(true), async (req, res) => {
+    try {
+        const pr = await db.query("SELECT * FROM store_products WHERE id=$1 AND status='available' AND is_support=FALSE", [parseInt(req.body.productId, 10)]);
+        if (!pr.rows.length) return res.json({ success: false, message: "المنتج غير متوفر" });
+        const e = await evalCoupon(req.body.code, pr.rows[0], req.user.discordId);
+        if (e.error) return res.json({ success: false, message: e.error });
+        res.json({ success: true, code: e.code, type: e.coupon.type, value: Number(e.coupon.value), original: e.base, discount: e.discount, final: e.final });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر التحقق من الكود" }); }
+});
+
+/* ── مشترياتي ── */
+app.get("/api/store/my/purchases", storeReadLimiter, authUser(true), async (req, res) => {
+    try {
+        const id = req.user.discordId;
+        const r = await db.query(
+            `SELECT s.id, s.amount, s.method, s.source, s.coupon_code, s.created_at,
+                    p.id AS pid, p.title, p.title_en, p.image, p.plan, p.category, p.is_support, v.rating AS my_rating
+             FROM store_purchases s
+             LEFT JOIN store_products p ON p.id = s.product_id
+             LEFT JOIN store_reviews v ON v.product_id = s.product_id AND v.discord_id = s.discord_id
+             WHERE s.discord_id=$1 ORDER BY s.created_at DESC LIMIT 100`, [id]);
+        const rows = r.rows.map(x => ({
+            id: x.id, amount: x.amount, method: x.method, source: x.source, couponCode: x.coupon_code, createdAt: x.created_at,
+            product: x.pid ? { id: x.pid, title: x.title, titleEn: x.title_en || "", image: x.image, plan: x.plan, category: x.category } : null,
+            myRating: x.my_rating || null
+        }));
+        let plans = []; try { plans = (await getPlansFromDiscord(id)) || []; } catch {}
+        const have = new Set(rows.filter(x => x.product).map(x => x.product.id));
+        let fromRoles = [];
+        if (plans.length) {
+            const pr = await db.query(`SELECT p.id, p.title, p.title_en, p.image, p.plan, p.category, v.rating AS my_rating
+                FROM store_products p LEFT JOIN store_reviews v ON v.product_id = p.id AND v.discord_id=$2 WHERE p.plan = ANY($1)`, [plans, id]);
+            fromRoles = pr.rows.filter(p => !have.has(p.id)).map(p => ({ id: null, amount: null, method: null, source: "discord-role", couponCode: null, createdAt: null, product: { id: p.id, title: p.title, titleEn: p.title_en || "", image: p.image, plan: p.plan, category: p.category }, myRating: p.my_rating || null }));
+        }
+        res.json({ success: true, purchases: [...rows, ...fromRoles], plans });
+    } catch (err) { console.error(err); res.status(500).json({ success: false, message: "تعذّر جلب مشترياتك" }); }
+});
+
+// إنشاء طلب دفع وإرجاع رابط PayPal (يدعم كود الخصم، والعروض)
 app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res) => {
     if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
     try {
@@ -1801,15 +2200,20 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
         const p = pr.rows[0];
         if (!p || p.status !== "available") return res.json({ success: false, message: "المنتج غير متوفر حالياً" });
         if (p.is_support) return res.json({ success: false, message: "منتج الدعم يتم عبر رابطه المباشر" });
-        const price = Number(p.price);
+        let price = effPrice(p), code = null;
         if (!(price > 0)) return res.json({ success: false, message: "سعر المنتج غير صالح" });
+        if (req.body.couponCode) {
+            const e = await evalCoupon(req.body.couponCode, p, req.user.discordId);
+            if (e.error) return res.json({ success: false, message: e.error });
+            price = e.final; code = e.code;
+        }
 
         const site = WEBSITE_URL.replace(/\/+$/, "");
         const order = await paypalCall("POST", "/v2/checkout/orders", {
             intent: "CAPTURE",
             purchase_units: [{
                 reference_id: `p${p.id}`,
-                custom_id: `d=${req.user.discordId}&p=${p.id}`,
+                custom_id: `d=${req.user.discordId}&p=${p.id}` + (code ? `&c=${code}` : ""),
                 description: String(p.title).slice(0, 120),
                 amount: { currency_code: "USD", value: price.toFixed(2) }
             }],
@@ -1821,11 +2225,11 @@ app.post("/api/store/checkout", checkoutLimiter, authUser(true), async (req, res
 
         const link = (order.data.links || []).find(l => l.rel === "payer-action") || (order.data.links || []).find(l => l.rel === "approve");
         if (!link) { console.error("❌ PayPal create order failed:", JSON.stringify(order.data)); return res.json({ success: false, message: "تعذّر بدء الدفع، حاول لاحقاً" }); }
-        res.json({ success: true, url: link.href, orderId: order.data.id });
+        res.json({ success: true, url: link.href, orderId: order.data.id, amount: price });
     } catch (err) { console.error("checkout error:", err); res.status(500).json({ success: false, message: "تعذّر بدء الدفع" }); }
 });
 
-// بعد رجوع العميل من PayPal: التقاط الدفعة ثم تسجيل الشراء وإعطاء الرتبة
+// بعد رجوع العميل من PayPal: التقاط الدفعة ثم تسجيل الشراء وإعطاء الرتبة والإشعارات
 app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (req, res) => {
     if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) return res.status(503).json({ success: false, code: "checkout_disabled", message: "الدفع التلقائي غير مفعّل" });
     try {
@@ -1840,6 +2244,7 @@ app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (
         const cm = new URLSearchParams(unit.custom_id || "");
         if (cm.get("d") !== req.user.discordId) return res.status(403).json({ success: false, message: "هذا الطلب لا يخص حسابك" });
         const productId = parseInt(cm.get("p"), 10);
+        const couponCode = (cm.get("c") || "").toUpperCase() || null;
 
         if (order.status === "APPROVED") {
             const cap = await paypalCall("POST", `/v2/checkout/orders/${orderId}/capture`, undefined, "cap-" + orderId);
@@ -1854,22 +2259,872 @@ app.post("/api/store/checkout/capture", checkoutLimiter, authUser(true), async (
         const pr = await db.query("SELECT * FROM store_products WHERE id=$1", [productId]);
         const p = pr.rows[0];
         const plan = p && p.plan ? p.plan : null;
+        const discount = couponCode && p ? Math.max(0, round2(effPrice(p) - Number(amount))) : null;
 
         const ins = await db.query(
-            `INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source, paypal_order_id)
-             VALUES ($1,$2,$3,$4,'PayPal','checkout',$5) ON CONFLICT (paypal_order_id) WHERE paypal_order_id IS NOT NULL DO NOTHING RETURNING id`,
-            [req.user.discordId, p ? p.id : null, plan, amount == null ? null : String(amount), orderId]);
+            `INSERT INTO store_purchases (discord_id, product_id, plan, amount, method, source, paypal_order_id, coupon_code, discount)
+             VALUES ($1,$2,$3,$4,'PayPal','checkout',$5,$6,$7) ON CONFLICT (paypal_order_id) WHERE paypal_order_id IS NOT NULL DO NOTHING RETURNING id`,
+            [req.user.discordId, p ? p.id : null, plan, amount == null ? null : String(amount), orderId, couponCode, discount || null]);
 
         let delivered = null;
         if (ins.rows.length) {           // أول مرة نعالج هذا الطلب
+            if (couponCode) await db.query("UPDATE store_coupons SET used = used + 1 WHERE code=$1", [couponCode]).catch(() => {});
             if (plan) {
                 delivered = await grantRoleToUser(req.user.discordId, plan);
                 if (delivered) await sendDMToUser(req.user.discordId, plan);
             }
             await sendLogToDiscord(req.user.discordId, plan || (p ? p.title : "منتج"), amount, "PayPal (موقع)");
         }
-        res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
+        res.json({ success: true, productId: p ? p.id : null, productTitle: p ? p.title : "", productTitleEn: p ? p.title_en : "", plan, roleGranted: delivered, alreadyProcessed: !ins.rows.length });
     } catch (err) { console.error("capture error:", err); res.status(500).json({ success: false, message: "تعذّر تأكيد الدفع، تواصل معنا وسنؤكده يدوياً" }); }
 });
+
+
+/* ============================================================
+   ██████  CA STORE — APP v4  (المكتبة / الأدمن / الإشعارات / الحماية)
+   كل شيء هنا إضافة فوق نظامك القديم — لم يُحذف أي مسار قديم.
+============================================================ */
+const http = require("http");
+const https = require("https");
+const dns = require("dns").promises;
+const net = require("net");
+
+const APP_OPS_CHANNEL_ID = process.env.APP_OPS_CHANNEL_ID || "1565845719217217706";       // تنبيهات الروابط + فشل التثبيت
+const APP_RELEASES_CHANNEL_ID = process.env.APP_RELEASES_CHANNEL_ID || "1479819609262522408"; // إشعارات المودات الجديدة والتحديثات
+const LINK_SIGNING_SECRET = process.env.LINK_SIGNING_SECRET || "";
+const ALLOW_PRIVATE_URLS = process.env.APP_ALLOW_PRIVATE_URLS === "1";                      // للاختبار فقط
+const APP_PERMS = ["mods", "packs", "presets", "bundles", "announcements", "users", "logs", "system"];
+const ITEM_TYPES = ["mod", "pack", "preset", "custom", "bundle"];
+
+const v4Limiter = (max, windowMs = 60 * 1000) => rateLimit({ windowMs, max, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "طلبات كثيرة، حاول بعد قليل" } });
+const v4ConfigLimiter = v4Limiter(60), v4ReadLimiter = v4Limiter(120), v4LinkLimiter = v4Limiter(40), v4ReportLimiter = v4Limiter(60), v4AdminLimiter = v4Limiter(300);
+
+/* ───────── جداول ───────── */
+async function v4Init() {
+    const q = (s) => db.query(s);
+    await q(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`);
+    await q(`CREATE TABLE IF NOT EXISTS app_categories (slug TEXT PRIMARY KEY, name TEXT NOT NULL, icon TEXT NOT NULL DEFAULT 'package', sort INT NOT NULL DEFAULT 0, legacy_title TEXT NOT NULL DEFAULT '', legacy_subtitle TEXT NOT NULL DEFAULT '', legacy_icon TEXT NOT NULL DEFAULT '', deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_mods (
+        id SERIAL PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'addons',
+        cover TEXT NOT NULL DEFAULT '', gallery JSONB NOT NULL DEFAULT '[]'::jsonb, version TEXT NOT NULL DEFAULT '1.0', changelog TEXT NOT NULL DEFAULT '',
+        file_name TEXT NOT NULL, url TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0,
+        plans TEXT[] NOT NULL DEFAULT '{}', required_roles TEXT[] NOT NULL DEFAULT '{}', premium BOOLEAN NOT NULL DEFAULT FALSE, featured BOOLEAN NOT NULL DEFAULT FALSE,
+        published BOOLEAN NOT NULL DEFAULT TRUE, publish_at TIMESTAMPTZ, early_plans TEXT[] NOT NULL DEFAULT '{}', conflicts INT[] NOT NULL DEFAULT '{}',
+        sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0, installs_ok INT NOT NULL DEFAULT 0, installs_fail INT NOT NULL DEFAULT 0,
+        link_ok BOOLEAN, link_status TEXT NOT NULL DEFAULT '', link_checked_at TIMESTAMPTZ, link_fail_count INT NOT NULL DEFAULT 0, link_alerted BOOLEAN NOT NULL DEFAULT FALSE,
+        notified_version TEXT NOT NULL DEFAULT '', created_by TEXT, updated_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_packs (
+        id TEXT PRIMARY KEY, plan TEXT NOT NULL, name TEXT NOT NULL, level INT NOT NULL DEFAULT 1, images JSONB NOT NULL DEFAULT '[]'::jsonb,
+        versions JSONB NOT NULL DEFAULT '[]'::jsonb, published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0,
+        link_state JSONB NOT NULL DEFAULT '{}'::jsonb, notified_version TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_presets (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, file TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', img TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0, published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0,
+        link_ok BOOLEAN, link_status TEXT NOT NULL DEFAULT '', link_checked_at TIMESTAMPTZ, link_fail_count INT NOT NULL DEFAULT 0, link_alerted BOOLEAN NOT NULL DEFAULT FALSE,
+        notified_version TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_customs (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', file TEXT NOT NULL, destination TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+        icon TEXT NOT NULL DEFAULT '', warning TEXT NOT NULL DEFAULT '', sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0, published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0,
+        link_ok BOOLEAN, link_status TEXT NOT NULL DEFAULT '', link_checked_at TIMESTAMPTZ, link_fail_count INT NOT NULL DEFAULT 0, link_alerted BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_bundles (
+        id SERIAL PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '', mod_ids INT[] NOT NULL DEFAULT '{}', plans TEXT[] NOT NULL DEFAULT '{}',
+        published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0, notified_version TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_admins (discord_id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', role TEXT NOT NULL DEFAULT 'مشرف', perms TEXT[] NOT NULL DEFAULT '{}', created_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_audit (id BIGSERIAL PRIMARY KEY, actor_id TEXT, actor_name TEXT, action TEXT NOT NULL, target_type TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_announcements (id SERIAL PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'info', title TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', active BOOLEAN NOT NULL DEFAULT TRUE, starts_at TIMESTAMPTZ, ends_at TIMESTAMPTZ, min_app_version TEXT NOT NULL DEFAULT '', created_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_reports (id BIGSERIAL PRIMARY KEY, discord_id TEXT, item_type TEXT NOT NULL, item_id TEXT NOT NULL, item_name TEXT NOT NULL DEFAULT '', version TEXT NOT NULL DEFAULT '', ok BOOLEAN NOT NULL, error TEXT NOT NULL DEFAULT '', app_version TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_downloads (id BIGSERIAL PRIMARY KEY, discord_id TEXT, item_type TEXT NOT NULL, item_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE INDEX IF NOT EXISTS idx_app_downloads_created ON app_downloads(created_at)`);
+    await q(`CREATE INDEX IF NOT EXISTS idx_app_reports_created ON app_reports(created_at)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_prefs (discord_id TEXT PRIMARY KEY, prefs JSONB NOT NULL DEFAULT '{}'::jsonb, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_bans (discord_id TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', created_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    await q(`CREATE TABLE IF NOT EXISTS app_releases (id BIGSERIAL PRIMARY KEY, item_type TEXT NOT NULL, item_id TEXT NOT NULL, name TEXT NOT NULL, version TEXT NOT NULL DEFAULT '', changelog TEXT NOT NULL DEFAULT '', cover TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
+    // إعدادات افتراضية
+    for (const [k, v] of [["maintenance_on", "0"], ["maintenance_message", "نقوم ببعض التحسينات، نعود قريباً."], ["min_version", ""], ["sign_links", "0"], ["legacy_public_links", "1"], ["admin_lock", "1"], ["admin_hwids", ""]])
+        await db.query("INSERT INTO app_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO NOTHING", [k, v]);
+}
+
+const _settingsCache = { at: 0, v: {} };
+async function getSettings(force) {
+    if (!force && Date.now() - _settingsCache.at < 5000) return _settingsCache.v;
+    const r = await db.query("SELECT key,value FROM app_settings");
+    const v = {}; r.rows.forEach(x => { v[x.key] = x.value; });
+    _settingsCache.at = Date.now(); _settingsCache.v = v; return v;
+}
+async function setSetting(k, val) { await db.query("INSERT INTO app_settings(key,value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", [k, String(val)]); _settingsCache.at = 0; }
+
+/* ───────── أدوات عامة ───────── */
+const cmpVer = (a, b) => { const pa = String(a || "0").split(".").map(n => parseInt(n, 10) || 0), pb = String(b || "0").split(".").map(n => parseInt(n, 10) || 0); for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d > 0 ? 1 : -1; } return 0; };
+const fmtSize = (n) => { n = Number(n) || 0; if (!n) return ""; const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0; while (n >= 1024 && i < 4) { n /= 1024; i++; } return (i >= 2 ? n.toFixed(n >= 100 ? 0 : 1) : Math.round(n)) + " " + u[i]; };
+const trunc = (s, n) => { s = String(s ?? ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
+const isHttpUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) && u.length <= 500; } catch { return false; } };
+const SAFE_FILE = /^[\w\-. ()]{1,120}\.(rpf|zip|ini|xml|asi|dll|meta|ytd|rar|7z|cfg)$/i;
+const jstr = (v) => { try { return JSON.stringify(v); } catch { return ""; } };
+
+/* Discord helper موحّد للقنوات */
+async function discordPost(channelId, embed, extra = {}) {
+    try {
+        if (!channelId || !DISCORD_BOT_TOKEN) return false;
+        const r = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+            method: "POST", headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ embeds: [embed], allowed_mentions: { parse: [] }, ...extra })
+        });
+        if (r && r.ok === false) { console.error("⚠️ v4 discord post failed:", r.status); return false; }
+        return true;
+    } catch (e) { console.error("⚠️ v4 discord post error:", e.message); return false; }
+}
+
+/* حماية SSRF: نمنع الوصول للشبكات الداخلية */
+function isPrivateIp(ip) {
+    if (net.isIPv4(ip)) { const [a, b] = ip.split(".").map(Number); return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224; }
+    if (net.isIPv6(ip)) { const l = ip.toLowerCase(); return l === "::1" || l === "::" || l.startsWith("fc") || l.startsWith("fd") || l.startsWith("fe80") || l.startsWith("::ffff:127.") || l.startsWith("::ffff:10.") || l.startsWith("::ffff:192.168."); }
+    return true;
+}
+async function assertPublicUrl(u) {
+    const x = new URL(u);
+    if (!/^https?:$/.test(x.protocol)) throw new Error("بروتوكول غير مسموح");
+    if (ALLOW_PRIVATE_URLS) return;
+    const host = x.hostname.replace(/^\[|\]$/g, "");
+    const ips = net.isIP(host) ? [host] : (await dns.lookup(host, { all: true })).map(a => a.address);
+    if (!ips.length || ips.some(isPrivateIp)) throw new Error("العنوان غير مسموح (شبكة داخلية)");
+}
+
+/* فحص رابط: HEAD ثم GET بنطاق، مع إمكانية حساب SHA-256 */
+function probeUrl(url, { hash = false, maxBytes = 2 * 1024 ** 3, timeout = 10000, hops = 0 } = {}) {
+    return new Promise(async (resolve) => {
+        const out = { ok: false, status: 0, sizeBytes: 0, contentType: "", finalUrl: url, sha256: "", warnings: [], error: "" };
+        try { await assertPublicUrl(url); } catch (e) { out.error = e.message; return resolve(out); }
+        const lib = url.startsWith("https") ? https : http;
+        const method = hash ? "GET" : "HEAD";
+        const req = lib.request(url, { method, timeout, headers: { "User-Agent": "CA-Store-LinkCheck/1.0" } }, (res) => {
+            out.status = res.statusCode;
+            if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && hops < 3) {
+                res.resume();
+                let next; try { next = new URL(res.headers.location, url).toString(); } catch { out.error = "تحويل غير صالح"; return resolve(out); }
+                return probeUrl(next, { hash, maxBytes, timeout, hops: hops + 1 }).then(r2 => { if (new URL(next).host !== new URL(url).host) r2.warnings.push("الرابط يحوّل إلى نطاق آخر"); resolve(r2); });
+            }
+            out.contentType = String(res.headers["content-type"] || "");
+            out.sizeBytes = parseInt(res.headers["content-length"] || "0", 10) || 0;
+            out.ok = res.statusCode >= 200 && res.statusCode < 300;
+            if (/text\/html/i.test(out.contentType)) out.warnings.push("الرابط يرجع صفحة ويب وليس ملفاً");
+            if (!out.sizeBytes && !hash) out.warnings.push("لا يوجد حجم معلن للملف");
+            if (url.startsWith("http:")) out.warnings.push("الرابط بدون تشفير (HTTP) — يُفضّل HTTPS");
+            if (!hash || !out.ok) { res.resume(); return resolve(out); }
+            const h = crypto.createHash("sha256"); let got = 0;
+            res.on("data", (c) => { got += c.length; if (got > maxBytes) { req.destroy(); out.ok = false; out.error = "الملف أكبر من الحد المسموح للفحص"; return resolve(out); } h.update(c); });
+            res.on("end", () => { out.sha256 = h.digest("hex"); out.sizeBytes = got; resolve(out); });
+            res.on("error", (e) => { out.ok = false; out.error = e.message; resolve(out); });
+        });
+        req.on("timeout", () => { req.destroy(); out.error = "انتهت مهلة الاتصال"; resolve(out); });
+        req.on("error", (e) => { out.error = e.message; resolve(out); });
+        req.end();
+    });
+}
+
+/* روابط مؤقتة متوافقة مع nginx secure_link (اختياري) */
+function signUrl(u) {
+    if (!LINK_SIGNING_SECRET) return { url: u };
+    try {
+        const x = new URL(u); const expires = Math.floor(Date.now() / 1000) + 600;
+        const md5 = crypto.createHash("md5").update(`${expires}${decodeURIComponent(x.pathname)} ${LINK_SIGNING_SECRET}`).digest("base64url");
+        x.searchParams.set("md5", md5); x.searchParams.set("expires", String(expires));
+        return { url: x.toString(), expiresAt: new Date(expires * 1000).toISOString() };
+    } catch { return { url: u }; }
+}
+
+/* ───────── مصادقة التطبيق ───────── */
+const _memberCache = new Map();
+async function getMember(discordId) {
+    const c = _memberCache.get(discordId);
+    if (c && Date.now() - c.at < 60000) return c.v;
+    let v = null;
+    try {
+        const r = await fetch(`https://discord.com/api/guilds/${DISCORD_GUILD_ID}/members/${discordId}`, { headers: { Authorization: `Bot ${DISCORD_BOT_TOKEN}` } });
+        const m = await r.json();
+        if (m && Array.isArray(m.roles)) v = { roles: m.roles, plans: m.roles.map(x => ROLE_PLAN_MAP[x]).filter(Boolean), name: (m.user && (m.user.global_name || m.user.username)) || "" };
+    } catch (e) { console.error("member fetch:", e.message); }
+    if (v) _memberCache.set(discordId, { at: Date.now(), v });
+    return v;
+}
+const _adminRows = { at: 0, map: new Map() };
+async function getAppAdmin(id) {
+    if (Date.now() - _adminRows.at > 15000) { const r = await db.query("SELECT * FROM app_admins"); _adminRows.map = new Map(r.rows.map(x => [x.discord_id, x])); _adminRows.at = Date.now(); }
+    return _adminRows.map.get(String(id)) || null;
+}
+const fail = (res, code, message, extra = {}) => res.status(code).json({ success: false, message, ...extra });
+
+async function appAuthCore(req, res) {
+    const h = req.headers.authorization || "";
+    if (!h.startsWith("Bearer ")) { fail(res, 401, "يلزم تسجيل الدخول", { code: "AUTH" }); return null; }
+    let dec; try { dec = jwt.verify(h.slice(7), JWT_SECRET); } catch { fail(res, 401, "الجلسة منتهية", { code: "AUTH" }); return null; }
+    const hwid = String(req.headers["x-hwid"] || "");
+    if (!dec.discordId || !dec.hwid || !hwid || dec.hwid !== hwid) { fail(res, 401, "جهاز غير مطابق", { code: "AUTH" }); return null; }
+    const u = await db.query("SELECT hwid FROM users WHERE discord_id=$1", [dec.discordId]);
+    if (!u.rows.length || u.rows[0].hwid !== hwid) { fail(res, 401, "الحساب مسجّل على جهاز مختلف", { code: "AUTH" }); return null; }
+    const ban = await db.query("SELECT reason FROM app_bans WHERE discord_id=$1", [dec.discordId]);
+    if (ban.rows.length) { fail(res, 403, "تم حظر حسابك" + (ban.rows[0].reason ? ": " + ban.rows[0].reason : ""), { code: "BANNED" }); return null; }
+    const isOwner = String(dec.discordId) === String(ADMIN_DISCORD_ID);
+    const adm = isOwner ? null : await getAppAdmin(dec.discordId);
+    const perms = isOwner ? [...APP_PERMS] : (adm ? adm.perms : []);
+    const member = await getMember(dec.discordId);
+    const isAdmin = isOwner || !!adm;
+    if (!member && !isAdmin) { fail(res, 403, "حسابك غير موجود في السيرفر", { code: "NO_MEMBER" }); return null; }
+    const s = await getSettings();
+    if (s.maintenance_on === "1" && !isAdmin) { fail(res, 503, s.maintenance_message || "الخدمة تحت الصيانة", { code: "MAINTENANCE" }); return null; }
+    req.user = { discordId: String(dec.discordId), hwid, plans: member ? member.plans : [], roles: member ? member.roles : [], isOwner, isAdmin, perms, adminRole: adm ? adm.role : (isOwner ? "المالك" : ""), name: (member && member.name) || (adm && adm.name) || "" };
+    return req.user;
+}
+const appAuth = async (req, res, next) => { try { if (await appAuthCore(req, res)) next(); } catch (e) { console.error("appAuth:", e); fail(res, 500, "خطأ في الخادم"); } };
+function appAdmin(perm) {
+    return async (req, res, next) => {
+        try {
+            const u = await appAuthCore(req, res); if (!u) return;
+            if (!u.isAdmin) return fail(res, 403, "ليست لديك صلاحية", { code: "FORBIDDEN" });
+            if (perm === "owner" ? !u.isOwner : (perm && perm !== "any" && !u.perms.includes(perm))) return fail(res, 403, "ليست لديك صلاحية لهذا الإجراء", { code: "FORBIDDEN" });
+            const s = await getSettings();
+            if (s.admin_lock === "1") {      // قفل أجهزة الأدمن: إن حُدّدت قائمة أجهزة فلا يدخل غيرها (المالك مستثنى)
+                const list = String(s.admin_hwids || "").split(",").map(x => x.trim()).filter(Boolean);
+                if (!u.isOwner && list.length && !list.includes(u.hwid)) return fail(res, 403, "هذا الجهاز غير مصرّح له بلوحة الأدمن", { code: "ADMIN_DEVICE" });
+            }
+            next();
+        } catch (e) { console.error("appAdmin:", e); fail(res, 500, "خطأ في الخادم"); }
+    };
+}
+async function v4Audit(req, action, targetType, target, detail) {
+    try { await db.query("INSERT INTO app_audit (actor_id,actor_name,action,target_type,target,detail) VALUES ($1,$2,$3,$4,$5,$6)", [req.user.discordId, trunc(req.user.name || req.user.adminRole || "", 60), action, targetType, trunc(target, 160), trunc(detail || "", 600)]); } catch (e) { console.error("audit:", e.message); }
+}
+
+/* ───────── التعبئة الأولية من البيانات القديمة (مرة واحدة) ───────── */
+function selfGet(pathname) {
+    return new Promise((resolve, reject) => {
+        const rq = http.get({ host: "127.0.0.1", port: process.env.PORT || 3000, path: pathname, timeout: 5000 }, (r) => { let b = ""; r.on("data", c => b += c); r.on("end", () => { try { resolve(JSON.parse(b)); } catch (e) { reject(e); } }); });
+        rq.on("error", reject); rq.on("timeout", () => { rq.destroy(); reject(new Error("timeout")); });
+    });
+}
+const CAT_SEED = {
+    Roads: { slug: "roads", name: "شوارع", icon: "road", sort: 1 },
+    "Premium Customers": { slug: "premium", name: "بريميوم", icon: "star", sort: 5 },
+    Vegetation: { slug: "vegetation", name: "أشجار ونباتات", icon: "tree", sort: 2 },
+    Addons: { slug: "addons", name: "إضافات", icon: "package", sort: 4 }
+};
+async function v4Seed() {
+    const cnt = async (t) => Number((await db.query(`SELECT COUNT(*) c FROM ${t}`)).rows[0].c);
+    if ((await cnt("app_mods")) === 0 && (await cnt("app_categories")) === 0) {
+        const d = await selfGet(LEGACY_SEED_PATH + "/mods");
+        let sort = 0;
+        for (const sec of d.sections || []) {
+            const c = CAT_SEED[sec.title] || { slug: String(sec.title).toLowerCase().replace(/[^a-z0-9]+/g, "-"), name: sec.title, icon: "package", sort: 9 };
+            await db.query("INSERT INTO app_categories (slug,name,icon,sort,legacy_title,legacy_subtitle,legacy_icon) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (slug) DO NOTHING", [c.slug, c.name, c.icon, c.sort, sec.title, sec.subtitle || "", sec.icon || ""]);
+            for (const m of sec.mods || []) {
+                await db.query(`INSERT INTO app_mods (name,category,cover,file_name,url,plans,required_roles,premium,sort,created_by,notified_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'seed','1.0')`,
+                    [m.name, c.slug, m.img || "", m.file, m.url, sec.requiredPlans || [], sec.requiredRoles || [], sec.title === "Premium Customers", sort++]);
+            }
+        }
+        console.log("🌱 seeded mods");
+    }
+    if ((await cnt("app_packs")) === 0) {
+        const d = await selfGet(LEGACY_SEED_PATH + "/packs"); let i = 0;
+        for (const p of d.packs || []) await db.query("INSERT INTO app_packs (id,plan,name,level,images,versions,sort,notified_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING", [p.id, p.plan, p.name, p.level || 1, jstr(p.images || []), jstr(p.versions || []), i++, ((p.versions || []).find(v => v.latest) || {}).version || ""]);
+        console.log("🌱 seeded packs");
+    }
+    if ((await cnt("app_presets")) === 0) {
+        const d = await selfGet(LEGACY_SEED_PATH + "/presets"); let i = 0;
+        for (const p of d.presets || []) await db.query("INSERT INTO app_presets (id,name,file,description,img,size,url,sort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING", [p.id, p.name, p.file, p.description || "", p.img || "", p.size || "", p.url, i++]);
+    }
+    if ((await cnt("app_customs")) === 0) {
+        const d = await selfGet(LEGACY_SEED_PATH + "/customizations"); let i = 0;
+        for (const [id, c] of Object.entries(d.customizations || {})) await db.query("INSERT INTO app_customs (id,name,description,file,destination,url,icon,warning,sort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING", [id, c.name, c.description || "", c.file, c.destination || "", c.download_url, c.icon || "", c.warning || "", i++]);
+    }
+}
+
+/* ───────── المسارات القديمة (نفس الشكل القديم، من قاعدة البيانات) ───────── */
+const stripUrls = async () => (await getSettings()).legacy_public_links !== "1";
+app.get("/api/packs", async (req, res) => {
+    try {
+        const nourl = await stripUrls();
+        const r = await db.query("SELECT * FROM app_packs WHERE deleted_at IS NULL AND published ORDER BY sort,id");
+        const packs = r.rows.map(p => {
+            const versions = (p.versions || []).map(v => { const o = { ...v }; delete o.sizeBytes; if (nourl) delete o.url; return o; });
+            const latest = (p.versions || []).find(v => v.latest) || (p.versions || [])[0] || {};
+            const o = { id: p.id, plan: p.plan, name: p.name, level: p.level, images: p.images, versions };
+            if (!nourl && latest.url) o.url = latest.url;
+            return o;
+        });
+        res.json({ success: true, packs });
+    } catch (e) { console.error(e); res.status(500).json({ success: false, packs: [] }); }
+});
+app.get("/api/mods", async (req, res) => {
+    try {
+        const nourl = await stripUrls();
+        const cats = (await db.query("SELECT * FROM app_categories WHERE deleted_at IS NULL ORDER BY sort,slug")).rows;
+        const mods = (await db.query("SELECT * FROM app_mods WHERE deleted_at IS NULL AND published AND (publish_at IS NULL OR publish_at <= NOW()) ORDER BY sort,id")).rows;
+        const sections = cats.map(c => {
+            const ms = mods.filter(m => m.category === c.slug);
+            const plans = [...new Set(ms.flatMap(m => m.plans))];
+            const roles = [...new Set(ms.flatMap(m => m.required_roles))];
+            const sec = { title: c.legacy_title || c.name, subtitle: c.legacy_subtitle || "", icon: c.legacy_icon || "", requiredPlans: plans, mods: ms.map(m => { const o = { name: m.name, file: m.file_name, img: m.cover }; if (!nourl) o.url = m.url; return o; }) };
+            if (roles.length) sec.requiredRoles = roles;
+            return sec;
+        }).filter(s => s.mods.length);
+        res.json({ success: true, sections });
+    } catch (e) { console.error(e); res.status(500).json({ success: false, sections: [] }); }
+});
+app.get("/api/presets", async (req, res) => {
+    try {
+        const nourl = await stripUrls();
+        const r = await db.query("SELECT * FROM app_presets WHERE deleted_at IS NULL AND published AND file ~* '\\.ini$' ORDER BY sort,id");
+        res.json({ success: true, presets: r.rows.map(p => { const o = { id: p.id, name: p.name, file: p.file, description: p.description, img: p.img, size: p.size }; if (!nourl) o.url = p.url; return o; }) });
+    } catch (e) { console.error(e); res.status(500).json({ success: false, presets: [] }); }
+});
+app.get("/api/customizations", async (req, res) => {
+    try {
+        const nourl = await stripUrls();
+        const r = await db.query("SELECT * FROM app_customs WHERE deleted_at IS NULL AND published ORDER BY sort,id");
+        const customizations = {};
+        r.rows.forEach(c => { const o = { name: c.name, description: c.description, file: c.file, destination: c.destination, icon: c.icon, warning: c.warning }; if (!nourl) o.download_url = c.url; customizations[c.id] = o; });
+        res.json({ success: true, customizations });
+    } catch (e) { console.error(e); res.status(500).json({ success: false, customizations: {} }); }
+});
+
+/* ───────── مسارات التطبيق الجديدة ───────── */
+const inWindow = (a) => (!a.starts_at || new Date(a.starts_at) <= new Date()) && (!a.ends_at || new Date(a.ends_at) >= new Date());
+const annView = (a) => ({ id: a.id, kind: a.kind, title: a.title, body: a.body, startsAt: a.starts_at, endsAt: a.ends_at, active: a.active, minAppVersion: a.min_app_version, createdAt: a.created_at });
+app.get("/api/v4/config", v4ConfigLimiter, async (req, res) => {
+    try {
+        const s = await getSettings();
+        const an = (await db.query("SELECT * FROM app_announcements WHERE active AND kind IN ('info','warning','maintenance') ORDER BY id DESC LIMIT 10")).rows.filter(inWindow);
+        res.json({ success: true, serverTime: new Date().toISOString(), maintenance: { on: s.maintenance_on === "1", message: s.maintenance_message || "" }, minVersion: s.min_version || "", banners: an.map(annView), legacyLinks: s.legacy_public_links === "1" });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.get("/api/v4/me", v4ReadLimiter, appAuth, (req, res) => {
+    const u = req.user; res.json({ success: true, discordId: u.discordId, plans: u.plans, isOwner: u.isOwner, isAdmin: u.isAdmin, perms: u.perms, role: u.isOwner ? "owner" : u.isAdmin ? "admin" : "user", name: u.name });
+});
+
+const canUse = (u, plans, roles) => u.isAdmin || ((!plans || !plans.length) && (!roles || !roles.length)) || (plans || []).some(p => u.plans.includes(p)) || (roles || []).some(r => u.roles.includes(r));
+function modView(m, u) {
+    const unlocked = canUse(u, m.plans, m.required_roles);
+    const early = !m.published && m.publish_at && new Date(m.publish_at) > new Date();
+    return { id: m.id, name: m.name, description: m.description, category: m.category, cover: m.cover, gallery: m.gallery || [], version: m.version, changelog: m.changelog, fileName: m.file_name,
+        sizeBytes: Number(m.size_bytes) || 0, sizeLabel: fmtSize(m.size_bytes), plans: m.plans, premium: m.premium, featured: m.featured, isNew: Date.now() - new Date(m.created_at).getTime() < 7 * 864e5,
+        early: !!early, conflicts: m.conflicts || [], downloads: m.downloads, createdAt: m.created_at, updatedAt: m.updated_at, unlocked, lockReason: unlocked ? null : (m.plans.length ? "plan:" + [...m.plans].sort()[0] : "role") };
+}
+app.get("/api/v4/library", v4ReadLimiter, appAuth, async (req, res) => {
+    try {
+        const u = req.user;
+        const mods = (await db.query("SELECT * FROM app_mods WHERE deleted_at IS NULL ORDER BY sort,id")).rows.filter(m => {
+            if (m.published && (!m.publish_at || new Date(m.publish_at) <= new Date())) return true;
+            return !m.published && m.publish_at && new Date(m.publish_at) > new Date() && (u.isAdmin || (m.early_plans || []).some(p => u.plans.includes(p)));
+        });
+        const cats = (await db.query("SELECT * FROM app_categories WHERE deleted_at IS NULL ORDER BY sort,slug")).rows;
+        const modViews = mods.map(m => modView(m, u));
+        const categories = cats.map(c => ({ slug: c.slug, name: c.name, icon: c.icon, sort: c.sort, count: modViews.filter(m => m.category === c.slug).length }));
+        const bundles = (await db.query("SELECT * FROM app_bundles WHERE deleted_at IS NULL AND published ORDER BY sort,id")).rows.map(b => {
+            const ms = modViews.filter(m => b.mod_ids.includes(m.id)); const total = ms.reduce((a, m) => a + m.sizeBytes, 0);
+            return { id: b.id, name: b.name, description: b.description, cover: b.cover, modIds: b.mod_ids, plans: b.plans, unlocked: canUse(u, b.plans, []) && ms.every(m => m.unlocked), totalSizeBytes: total, sizeLabel: fmtSize(total) };
+        });
+        const packs = (await db.query("SELECT * FROM app_packs WHERE deleted_at IS NULL AND published ORDER BY sort,id")).rows.map(p => ({ id: p.id, plan: p.plan, name: p.name, level: p.level, images: p.images, unlocked: u.isAdmin || u.plans.includes(p.plan),
+            versions: (p.versions || []).map(v => ({ version: v.version, date: v.date, latest: !!v.latest, size: v.size, features: v.features || [], changelog: v.changelog || "", hasHash: !!v.sha256 })) }));
+        const presets = (await db.query("SELECT * FROM app_presets WHERE deleted_at IS NULL AND published AND file ~* '\\.ini$' ORDER BY sort,id")).rows.map(p => ({ id: p.id, name: p.name, file: p.file, description: p.description, img: p.img, size: p.size, downloads: p.downloads }));
+        const customizations = (await db.query("SELECT * FROM app_customs WHERE deleted_at IS NULL AND published ORDER BY sort,id")).rows.map(c => ({ id: c.id, name: c.name, description: c.description, file: c.file, destination: c.destination, icon: c.icon, warning: c.warning }));
+        res.json({ success: true, categories, mods: modViews, bundles, packs, presets, customizations });
+    } catch (e) { console.error("library:", e); fail(res, 500, "تعذّر تحميل المكتبة"); }
+});
+
+/* رابط التحميل — لا يُعطى إلا لمن يملك الصلاحية */
+app.post("/api/v4/link", v4LinkLimiter, appAuth, async (req, res) => {
+    try {
+        const u = req.user, type = String(req.body.type || ""), id = String(req.body.id ?? "");
+        let item = null, out = null, table = null;
+        if (type === "mod") {
+            const r = await db.query("SELECT * FROM app_mods WHERE id=$1 AND deleted_at IS NULL", [parseInt(id, 10) || 0]); item = r.rows[0]; table = "app_mods";
+            if (item) {
+                const live = item.published && (!item.publish_at || new Date(item.publish_at) <= new Date());
+                const early = !item.published && item.publish_at && new Date(item.publish_at) > new Date() && (u.isAdmin || (item.early_plans || []).some(p => u.plans.includes(p)));
+                if (!live && !early && !u.isAdmin) item = null;
+            }
+            if (!item) return fail(res, 404, "المود غير موجود", { code: "NOT_FOUND" });
+            if (!canUse(u, item.plans, item.required_roles)) return fail(res, 403, "نسختك لا تسمح بتحميل هذا المود", { code: "LOCKED" });
+            out = { url: item.url, sha256: item.sha256, sizeBytes: Number(item.size_bytes) || 0, fileName: item.file_name, name: item.name };
+        } else if (type === "pack") {
+            const r = await db.query("SELECT * FROM app_packs WHERE id=$1 AND deleted_at IS NULL AND published", [id]); item = r.rows[0]; table = "app_packs";
+            if (!item) return fail(res, 404, "الباك غير موجود", { code: "NOT_FOUND" });
+            if (!(u.isAdmin || u.plans.includes(item.plan))) return fail(res, 403, "نسختك لا تسمح بتحميل هذا الباك", { code: "LOCKED" });
+            const ver = (item.versions || []).find(v => req.body.version ? v.version === String(req.body.version) : v.latest) || (item.versions || [])[0];
+            if (!ver || !ver.url) return fail(res, 404, "الإصدار غير موجود", { code: "NOT_FOUND" });
+            out = { url: ver.url, sha256: ver.sha256 || "", sizeBytes: Number(ver.sizeBytes) || 0, fileName: `${item.id}-${ver.version}.zip`, name: `${item.name} ${ver.version}`, version: ver.version };
+        } else if (type === "preset" || type === "custom") {
+            table = type === "preset" ? "app_presets" : "app_customs";
+            item = (await db.query(`SELECT * FROM ${table} WHERE id=$1 AND deleted_at IS NULL AND published`, [id])).rows[0];
+            if (!item) return fail(res, 404, "العنصر غير موجود", { code: "NOT_FOUND" });
+            out = { url: item.url, sha256: item.sha256, sizeBytes: Number(item.size_bytes) || 0, fileName: item.file, name: item.name };
+            if (type === "custom") out.destination = item.destination;
+        } else return fail(res, 400, "نوع غير مدعوم");
+        const s = await getSettings();
+        if (s.sign_links === "1") Object.assign(out, signUrl(out.url));
+        db.query(`UPDATE ${table} SET downloads = downloads + 1 WHERE id=$1`, [type === "mod" ? item.id : item.id]).catch(() => {});
+        db.query("INSERT INTO app_downloads (discord_id,item_type,item_id) VALUES ($1,$2,$3)", [u.discordId, type, String(item.id)]).catch(() => {});
+        res.json({ success: true, ...out });
+    } catch (e) { console.error("link:", e); fail(res, 500, "تعذّر إنشاء رابط التحميل"); }
+});
+
+/* تقارير التثبيت + تنبيه فشل (مع كبح التكرار) */
+const _failAlert = new Map();
+app.post("/api/v4/report", v4ReportLimiter, appAuth, async (req, res) => {
+    try {
+        const u = req.user, b = req.body || {}, type = String(b.type || ""), id = String(b.id ?? ""), ok = b.ok === true;
+        if (!ITEM_TYPES.includes(type) || !id || id.length > 60) return fail(res, 400, "بيانات غير صالحة");
+        const version = trunc(b.version || "", 30), error = trunc(b.error || "", 400), appVersion = trunc(b.appVersion || "", 20);
+        let name = id;
+        try {
+            const t = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id], bundle: ["app_bundles", "id", parseInt(id, 10) || 0] }[type];
+            const r = await db.query(`SELECT name FROM ${t[0]} WHERE ${t[1]}=$1`, [t[2]]); if (r.rows[0]) name = r.rows[0].name;
+            if (type === "mod") await db.query(`UPDATE app_mods SET ${ok ? "installs_ok" : "installs_fail"} = ${ok ? "installs_ok" : "installs_fail"} + 1 WHERE id=$1`, [t[2]]);
+        } catch {}
+        await db.query("INSERT INTO app_reports (discord_id,item_type,item_id,item_name,version,ok,error,app_version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", [u.discordId, type, id, trunc(name, 120), version, ok, error, appVersion]);
+        if (!ok) {
+            const key = type + ":" + id, last = _failAlert.get(key) || 0;
+            if (Date.now() - last > 15 * 60 * 1000) {
+                _failAlert.set(key, Date.now());
+                const c = Number((await db.query("SELECT COUNT(*) c FROM app_reports WHERE item_type=$1 AND item_id=$2 AND NOT ok AND created_at > NOW() - INTERVAL '24 hours'", [type, id])).rows[0].c);
+                discordPost(APP_OPS_CHANNEL_ID, {
+                    author: { name: "CA Store • تتبع التثبيت" }, title: "⚠️ فشل تثبيت: " + trunc(name, 100), color: 0xE5484D,
+                    description: error ? "```\n" + trunc(error, 300).replace(/`/g, "'") + "\n```" : "*بدون تفاصيل*",
+                    fields: [{ name: "النوع", value: type, inline: true }, { name: "الإصدار", value: version || "—", inline: true }, { name: "العميل", value: `<@${u.discordId}>`, inline: true }, { name: "إخفاقات آخر 24 ساعة", value: String(c), inline: true }, { name: "إصدار البرنامج", value: appVersion || "—", inline: true }],
+                    footer: { text: "CA Store • مراقبة" }, timestamp: new Date().toISOString()
+                });
+            }
+        }
+        res.json({ success: true });
+    } catch (e) { console.error("report:", e); fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* تفضيلات المستخدم: المفضلة / المثبّت / البروفايلات */
+function cleanPrefs(p) {
+    p = p && typeof p === "object" ? p : {};
+    const arr = (a, n, f) => (Array.isArray(a) ? a : []).slice(0, n).map(f).filter(x => x !== null && x !== undefined);
+    const sid = (x) => (typeof x === "string" || typeof x === "number") && String(x).length <= 60 ? String(x) : null;
+    const nid = (x) => { const n = parseInt(x, 10); return n > 0 ? n : null; };
+    const f = p.favorites || {}, i = p.installed || {};
+    return {
+        favorites: { mod: arr(f.mod, 300, nid), pack: arr(f.pack, 50, sid), preset: arr(f.preset, 300, sid), bundle: arr(f.bundle, 100, nid) },
+        installed: { mod: arr(i.mod, 500, nid) },
+        profiles: arr(p.profiles, 20, (q) => q && typeof q === "object" ? { id: trunc(sid(q.id) || crypto.randomBytes(4).toString("hex"), 40), name: trunc(q.name || "بروفايل", 40), mods: arr(q.mods, 100, nid), presets: arr(q.presets, 50, sid), createdAt: trunc(q.createdAt || new Date().toISOString(), 40) } : null)
+    };
+}
+app.get("/api/v4/prefs", v4ReadLimiter, appAuth, async (req, res) => {
+    try { const r = await db.query("SELECT prefs FROM app_prefs WHERE discord_id=$1", [req.user.discordId]); res.json({ success: true, prefs: cleanPrefs(r.rows[0] ? r.rows[0].prefs : {}) }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+app.put("/api/v4/prefs", v4ReadLimiter, appAuth, async (req, res) => {
+    try {
+        const prefs = cleanPrefs(req.body && req.body.prefs); const js = JSON.stringify(prefs);
+        if (js.length > 65536) return fail(res, 413, "حجم التفضيلات كبير");
+        await db.query("INSERT INTO app_prefs (discord_id,prefs,updated_at) VALUES ($1,$2,NOW()) ON CONFLICT (discord_id) DO UPDATE SET prefs=EXCLUDED.prefs, updated_at=NOW()", [req.user.discordId, js]);
+        res.json({ success: true, prefs });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.get("/api/v4/news", v4ReadLimiter, appAuth, async (req, res) => {
+    try {
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+        const news = (await db.query("SELECT * FROM app_announcements WHERE active AND kind='news' ORDER BY id DESC LIMIT $1", [limit])).rows.filter(inWindow).map(annView);
+        const releases = (await db.query("SELECT * FROM app_releases ORDER BY id DESC LIMIT $1", [limit])).rows.map(r => ({ id: r.id, type: r.item_type, itemId: r.item_id, name: r.name, version: r.version, changelog: r.changelog, cover: r.cover, createdAt: r.created_at }));
+        res.json({ success: true, news, releases });
+    } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+app.get("/api/v4/whats-new", v4ReadLimiter, appAuth, async (req, res) => {
+    try {
+        const v = trunc(req.query.version || "", 20);
+        const notes = (await db.query("SELECT * FROM app_announcements WHERE active AND kind='release' AND min_app_version=$1 ORDER BY id DESC LIMIT 5", [v])).rows.map(annView);
+        res.json({ success: true, notes });
+    } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── إشعارات الإصدارات (روم الإصدارات) ───────── */
+const TYPE_META = { mod: { label: "مود", color: 0x5B8DEF, icon: "📦" }, pack: { label: "باك جرافيكس", color: 0xB48CFF, icon: "🎨" }, preset: { label: "فلتر", color: 0xF5B84A, icon: "🎛️" }, bundle: { label: "حزمة مودات", color: 0x3DDC97, icon: "🧰" }, custom: { label: "تخصيص", color: 0x9AA4B2, icon: "⚙️" } };
+async function announceRelease(type, it, { update = false } = {}) {
+    try {
+        const meta = TYPE_META[type] || TYPE_META.mod;
+        await db.query("INSERT INTO app_releases (item_type,item_id,name,version,changelog,cover) VALUES ($1,$2,$3,$4,$5,$6)", [type, String(it.id), trunc(it.name, 120), trunc(it.version || "", 30), trunc(it.changelog || "", 600), trunc(it.cover || "", 500)]);
+        const fields = [];
+        if (it.categoryName) fields.push({ name: "القسم", value: it.categoryName, inline: true });
+        if (it.version) fields.push({ name: "الإصدار", value: "`" + trunc(it.version, 30) + "`", inline: true });
+        if (it.sizeLabel) fields.push({ name: "الحجم", value: it.sizeLabel, inline: true });
+        fields.push({ name: "من يستطيع تحميله", value: it.plans && it.plans.length ? it.plans.map(p => "`" + p + "`").join(" ") : "كل النسخ", inline: false });
+        const embed = {
+            author: { name: "CA Store • " + (update ? "تحديث" : "إضافة جديدة") },
+            title: `${meta.icon} ${update ? "تحديث" : "جديد"} — ${trunc(it.name, 100)}`, color: meta.color,
+            description: it.changelog ? "**ما الجديد**\n>>> " + trunc(it.changelog, 900) : (it.description ? trunc(it.description, 400) : undefined),
+            fields, footer: { text: `${meta.label} • افتح البرنامج لتثبيته الآن` }, timestamp: new Date().toISOString()
+        };
+        if (/^https?:\/\//.test(it.cover || "")) embed.image = { url: it.cover };
+        await discordPost(APP_RELEASES_CHANNEL_ID, embed);
+    } catch (e) { console.error("announceRelease:", e.message); }
+}
+const catNameOf = async (slug) => { const r = await db.query("SELECT name FROM app_categories WHERE slug=$1", [slug]); return r.rows[0] ? r.rows[0].name : slug; };
+
+/* ───────── التحقق من المدخلات (مخطط الحقول) ───────── */
+const PLAN_SET = ["CA-1", "CA-2", "CA-3", "CA-4", "CA-5"];
+const FIELD = {
+    s: (v, o) => { v = String(v ?? "").trim(); if (o.req && !v) throw new Error(`${o.label} مطلوب`); if (v.length > (o.max || 200)) throw new Error(`${o.label} طويل جداً`); return v; },
+    u: (v, o) => { v = String(v ?? "").trim(); if (!v && !o.req) return ""; if (!isHttpUrl(v)) throw new Error(`${o.label} يجب أن يكون رابط http/https صالحاً`); return v; },
+    cov: (v, o) => { v = String(v ?? "").trim(); if (!v) return ""; if (v.length > 500 || !(/^https?:\/\//.test(v) || /^(\.\.\/)?assets\/[\w\-. ()\/]+$/.test(v) || /^[\w\-. ()]+\.(png|jpe?g|webp|gif|avif)$/i.test(v))) throw new Error(`${o.label} غير صالح`); return v; },
+    b: (v) => v === true || v === "true" || v === 1,
+    i: (v, o) => { const n = parseInt(v, 10); if (Number.isNaN(n) || n < (o.min ?? 0) || n > (o.max ?? 1e9)) throw new Error(`${o.label} غير صالح`); return n; },
+    n: (v, o) => { const n = Number(v || 0); if (!Number.isFinite(n) || n < 0 || n > 1e13) throw new Error(`${o.label} غير صالح`); return Math.round(n); },
+    h: (v, o) => { v = String(v ?? "").trim().toLowerCase(); if (v && !/^[a-f0-9]{64}$/.test(v)) throw new Error(`${o.label}: يجب أن تكون 64 خانة hex`); return v; },
+    f: (v, o) => { v = String(v ?? "").trim(); if (!SAFE_FILE.test(v)) throw new Error(`${o.label} غير صالح (حروف وأرقام ونقطة وامتداد مسموح فقط)`); return v; },
+    sa: (v, o) => { if (!Array.isArray(v)) return []; return [...new Set(v.slice(0, o.max || 20).map(x => String(x).trim()).filter(Boolean).map(x => { if (x.length > (o.item || 80)) throw new Error(`${o.label}: عنصر طويل`); return x; }))]; },
+    plans: (v, o) => { const a = FIELD.sa(v, { ...o, max: 5 }); if (a.some(p => !PLAN_SET.includes(p))) throw new Error(`${o.label}: نسخة غير معروفة`); return a; },
+    roles: (v, o) => { const a = FIELD.sa(v, { ...o, max: 10 }); if (a.some(p => !/^\d{5,25}$/.test(p))) throw new Error(`${o.label}: معرّف رول غير صالح`); return a; },
+    ia: (v, o) => (Array.isArray(v) ? [...new Set(v.slice(0, o.max || 50).map(x => parseInt(x, 10)).filter(x => x > 0))] : []),
+    gal: (v, o) => (Array.isArray(v) ? v.slice(0, 12).map(x => FIELD.cov(x, o)).filter(Boolean) : []),
+    ts: (v, o) => { if (v === null || v === undefined || v === "") return null; const d = new Date(v); if (isNaN(d)) throw new Error(`${o.label}: تاريخ غير صالح`); return d.toISOString(); },
+    versions: (v, o) => {
+        if (!Array.isArray(v) || !v.length || v.length > 30) throw new Error("الإصدارات: مطلوب إصدار واحد على الأقل");
+        const out = v.map(x => ({ version: FIELD.s(x.version, { label: "رقم الإصدار", req: true, max: 20 }), date: FIELD.s(x.date, { label: "التاريخ", max: 20 }), latest: !!x.latest, size: FIELD.s(x.size, { label: "الحجم", max: 20 }), features: FIELD.sa(x.features, { label: "المزايا", max: 12, item: 120 }), changelog: FIELD.s(x.changelog, { label: "ملاحظات الإصدار", max: 600 }), url: FIELD.u(x.url, { label: "رابط التحميل", req: true }), sha256: FIELD.h(x.sha256, { label: "البصمة" }), sizeBytes: FIELD.n(x.sizeBytes, { label: "الحجم بالبايت" }) }));
+        let seen = false; out.forEach(x => { if (x.latest && !seen) seen = true; else x.latest = false; }); if (!seen) out[0].latest = true; return out;
+    }
+};
+// [apiKey, column, type, opts, jsonb?]
+const DEFS = {
+    mods: { table: "app_mods", perm: "mods", audit: "mod", idType: "int", release: "mod", ts: true, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["description", "description", "s", { label: "الوصف", max: 1200 }], ["category", "category", "s", { label: "القسم", req: true, max: 40 }],
+        ["cover", "cover", "cov", { label: "الغلاف" }], ["gallery", "gallery", "gal", { label: "المعرض" }, true], ["version", "version", "s", { label: "الإصدار", max: 20 }], ["changelog", "changelog", "s", { label: "ما الجديد", max: 600 }],
+        ["fileName", "file_name", "f", { label: "اسم الملف" }], ["url", "url", "u", { label: "رابط التحميل", req: true }], ["sha256", "sha256", "h", { label: "البصمة" }], ["sizeBytes", "size_bytes", "n", { label: "الحجم" }],
+        ["plans", "plans", "plans", { label: "النسخ المسموحة" }], ["requiredRoles", "required_roles", "roles", { label: "الرولات" }], ["premium", "premium", "b", {}], ["featured", "featured", "b", {}], ["published", "published", "b", {}],
+        ["publishAt", "publish_at", "ts", { label: "وقت النشر" }], ["earlyPlans", "early_plans", "plans", { label: "الوصول المبكر" }], ["conflicts", "conflicts", "ia", { max: 30 }], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    packs: { table: "app_packs", perm: "packs", audit: "pack", idType: "text", release: "pack", ts: true, fields: [
+        ["plan", "plan", "s", { label: "النسخة", req: true, max: 10 }], ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["level", "level", "i", { label: "المستوى", min: 1, max: 9 }], ["images", "images", "gal", { label: "الصور" }, true],
+        ["versions", "versions", "versions", { label: "الإصدارات", req: true }, true], ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    presets: { table: "app_presets", perm: "presets", audit: "preset", idType: "text", release: "preset", ts: true, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["file", "file", "f", { label: "اسم الملف" }], ["description", "description", "s", { label: "الوصف", max: 300 }], ["img", "img", "cov", { label: "الصورة" }], ["size", "size", "s", { label: "الحجم", max: 20 }],
+        ["url", "url", "u", { label: "رابط التحميل", req: true }], ["sha256", "sha256", "h", { label: "البصمة" }], ["sizeBytes", "size_bytes", "n", { label: "الحجم" }], ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    customizations: { table: "app_customs", perm: "presets", audit: "custom", idType: "text", ts: true, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["description", "description", "s", { label: "الوصف", max: 300 }], ["file", "file", "f", { label: "اسم الملف" }], ["destination", "destination", "s", { label: "مسار الوجهة", max: 200 }],
+        ["url", "url", "u", { label: "رابط التحميل", req: true }], ["icon", "icon", "s", { label: "الأيقونة", max: 600 }], ["warning", "warning", "s", { label: "التحذير", max: 200 }], ["sha256", "sha256", "h", { label: "البصمة" }], ["sizeBytes", "size_bytes", "n", { label: "الحجم" }],
+        ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    bundles: { table: "app_bundles", perm: "bundles", audit: "bundle", idType: "int", release: "bundle", ts: true, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["description", "description", "s", { label: "الوصف", max: 400 }], ["cover", "cover", "cov", { label: "الغلاف" }], ["modIds", "mod_ids", "ia", { max: 40 }], ["plans", "plans", "plans", { label: "النسخ" }],
+        ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    categories: { table: "app_categories", perm: "mods", audit: "category", idType: "text", idCol: "slug", ts: false, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 40 }], ["icon", "icon", "s", { label: "الأيقونة", max: 30 }], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] }
+};
+const toCamel = (r) => { const o = {}; for (const [k, v] of Object.entries(r)) o[k.replace(/_([a-z])/g, (_, c) => c.toUpperCase())] = typeof v === "bigint" ? Number(v) : (k === "size_bytes" ? Number(v) : v); return o; };
+function readBody(def, body, partial) {
+    const vals = {};
+    for (const [api, col, type, opts, isJson] of def.fields) {
+        if (body[api] === undefined) { if (!partial && opts && opts.req) throw new Error(`${opts.label} مطلوب`); continue; }
+        let v = FIELD[type](body[api], opts || {});
+        vals[col] = isJson ? JSON.stringify(v) : v;
+    }
+    return vals;
+}
+const slugify = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+const isMainOnly = (req, res) => { if (!req.user.isOwner) { fail(res, 403, "هذا الإجراء للمالك فقط", { code: "FORBIDDEN" }); return false; } return true; };
+
+for (const [route, def] of Object.entries(DEFS)) {
+    const idCol = def.idCol || "id", parseId = (x) => (def.idType === "int" ? (parseInt(x, 10) || 0) : String(x).slice(0, 60));
+    const base = "/api/v4/admin/" + route, G = [v4AdminLimiter, appAdmin(def.perm)];
+    app.get(base, ...G, async (req, res) => {
+        try { const r = await db.query(`SELECT * FROM ${def.table} WHERE ${req.query.deleted === "1" ? "deleted_at IS NOT NULL" : "deleted_at IS NULL"} ORDER BY ${def.table === "app_categories" ? "sort,slug" : "sort,id"}`); res.json({ success: true, items: r.rows.map(toCamel) }); }
+        catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+    app.post(base, ...G, async (req, res) => {
+        try {
+            const v = readBody(def, req.body || {}, false);
+            if (route === "mods") { if (!(await db.query("SELECT 1 FROM app_categories WHERE slug=$1 AND deleted_at IS NULL", [v.category])).rows.length) return fail(res, 400, "القسم غير موجود"); v.created_by = req.user.discordId; v.updated_by = req.user.discordId; }
+            let id;
+            if (def.idType === "text") { id = slugify(req.body.id || req.body.slug || v.name || v.plan) || (route === "categories" || route === "presets" || route === "customizations" ? "x" + crypto.randomBytes(3).toString("hex") : ""); if (route === "packs") id = String(req.body.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 20) || ("P" + Date.now().toString(36)); if (id.length < 2) return fail(res, 400, "المعرّف غير صالح"); v[idCol] = id; }
+            if (route === "presets" || route === "customizations") { v.file = v.file || ""; if (!v.file) return fail(res, 400, "اسم الملف مطلوب"); }
+            if (route === "presets" && !/\.ini$/i.test(v.file)) return fail(res, 400, "الفلاتر يجب أن تكون بصيغة .ini");
+            const initialNotify = def.release && v.published !== false;
+            if (route === "mods" && v.publish_at && new Date(v.publish_at) > new Date()) v.published = false;       // مجدول
+            const cols = Object.keys(v);
+            const ins = await db.query(`INSERT INTO ${def.table} (${cols.join(",")}) VALUES (${cols.map((_, i) => "$" + (i + 1)).join(",")}) RETURNING *`, cols.map(c => v[c]));
+            const row = ins.rows[0];
+            await v4Audit(req, "create", def.audit, row.name || row[idCol], "");
+            if (def.release && row.published && (req.body.notify !== false)) {
+                const ver = row.version || (Array.isArray(row.versions) ? ((row.versions.find(x => x.latest) || {}).version || "") : "");
+                await db.query(`UPDATE ${def.table} SET notified_version=$1 WHERE ${idCol}=$2`, [ver, row[idCol]]);
+                await announceRelease(def.release, { id: row[idCol], name: row.name, version: ver, changelog: row.changelog || (Array.isArray(row.versions) ? ((row.versions.find(x => x.latest) || {}).changelog || "") : ""), description: row.description, cover: row.cover || (Array.isArray(row.images) ? row.images[0] : ""), plans: row.plans || (route === "packs" ? [row.plan] : []), sizeLabel: fmtSize(row.size_bytes), categoryName: route === "mods" ? await catNameOf(row.category) : "" });
+            }
+            res.json({ success: true, item: toCamel(row) });
+        } catch (e) { if (e.code === "23505") return fail(res, 409, "المعرّف مستخدم من قبل"); if (e.code === "23514" || /مطلوب|غير صالح|طويل|يجب|عنصر|الإصدارات|نسخة/.test(e.message)) return fail(res, 400, e.message); console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+    app.put(base + "/:id", ...G, async (req, res) => {
+        try {
+            const id = parseId(req.params.id), cur = (await db.query(`SELECT * FROM ${def.table} WHERE ${idCol}=$1 AND deleted_at IS NULL`, [id])).rows[0];
+            if (!cur) return fail(res, 404, "العنصر غير موجود");
+            const v = readBody(def, req.body || {}, true);
+            if (route === "mods") { if (v.category && !(await db.query("SELECT 1 FROM app_categories WHERE slug=$1 AND deleted_at IS NULL", [v.category])).rows.length) return fail(res, 400, "القسم غير موجود"); v.updated_by = req.user.discordId; }
+            if (route === "presets" && v.file && !/\.ini$/i.test(v.file)) return fail(res, 400, "الفلاتر يجب أن تكون بصيغة .ini");
+            if (route === "mods" && v.publish_at && new Date(v.publish_at) > new Date() && !cur.published) v.published = false;
+            const cols = Object.keys(v); if (!cols.length) return fail(res, 400, "لا توجد تغييرات");
+            const upd = await db.query(`UPDATE ${def.table} SET ${cols.map((c, i) => c + "=$" + (i + 1)).join(",")}${def.ts ? ",updated_at=NOW()" : ""} WHERE ${idCol}=$${cols.length + 1} RETURNING *`, [...cols.map(c => v[c]), id]);
+            const row = upd.rows[0];
+            const changed = cols.filter(c => JSON.stringify(cur[c]) !== JSON.stringify(row[c]) && !["updated_by"].includes(c));
+            await v4Audit(req, "update", def.audit, row.name || id, "الحقول: " + changed.join("، "));
+            if (def.release && row.published) {
+                const ver = row.version || (Array.isArray(row.versions) ? ((row.versions.find(x => x.latest) || {}).version || "") : "");
+                if (req.body.notify === true || (ver && ver !== row.notified_version && !cur.deleted_at)) {
+                    await db.query(`UPDATE ${def.table} SET notified_version=$1 WHERE ${idCol}=$2`, [ver, id]);
+                    await announceRelease(def.release, { id, name: row.name, version: ver, changelog: row.changelog || (Array.isArray(row.versions) ? ((row.versions.find(x => x.latest) || {}).changelog || "") : ""), description: row.description, cover: row.cover || (Array.isArray(row.images) ? row.images[0] : ""), plans: row.plans || (route === "packs" ? [row.plan] : []), sizeLabel: fmtSize(row.size_bytes), categoryName: route === "mods" ? await catNameOf(row.category) : "" }, { update: true });
+                }
+            }
+            res.json({ success: true, item: toCamel(row) });
+        } catch (e) { if (/مطلوب|غير صالح|طويل|يجب|عنصر|الإصدارات|نسخة/.test(e.message)) return fail(res, 400, e.message); console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+    app.delete(base + "/:id", ...G, async (req, res) => {
+        try {
+            const id = parseId(req.params.id), r = await db.query(`UPDATE ${def.table} SET deleted_at=NOW() WHERE ${idCol}=$1 AND deleted_at IS NULL RETURNING *`, [id]);
+            if (!r.rows.length) return fail(res, 404, "العنصر غير موجود");
+            await v4Audit(req, "delete", def.audit, r.rows[0].name || id, "نُقل إلى المحذوفات (يُحفظ 30 يوماً)"); res.json({ success: true });
+        } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+    app.post(base + "/:id/restore", ...G, async (req, res) => {
+        try {
+            const id = parseId(req.params.id), r = await db.query(`UPDATE ${def.table} SET deleted_at=NULL WHERE ${idCol}=$1 AND deleted_at IS NOT NULL RETURNING *`, [id]);
+            if (!r.rows.length) return fail(res, 404, "العنصر غير موجود في المحذوفات");
+            await v4Audit(req, "restore", def.audit, r.rows[0].name || id, ""); res.json({ success: true, item: toCamel(r.rows[0]) });
+        } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+    app.delete(base + "/:id/purge", ...G, async (req, res) => {          // حذف نهائي: للمالك فقط + كتابة الاسم للتأكيد
+        try {
+            if (!isMainOnly(req, res)) return;
+            const id = parseId(req.params.id), cur = (await db.query(`SELECT * FROM ${def.table} WHERE ${idCol}=$1`, [id])).rows[0];
+            if (!cur) return fail(res, 404, "العنصر غير موجود");
+            if (String((req.body || {}).confirm || "") !== String(cur.name || cur[idCol])) return fail(res, 400, "اكتب اسم العنصر بالضبط للتأكيد", { code: "CONFIRM" });
+            await db.query(`DELETE FROM ${def.table} WHERE ${idCol}=$1`, [id]);
+            await v4Audit(req, "purge", def.audit, cur.name || id, "حذف نهائي"); res.json({ success: true });
+        } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+    });
+}
+
+/* ───────── فحص الروابط + حساب البصمة ───────── */
+app.post("/api/v4/admin/inspect-link", v4AdminLimiter, appAdmin("any"), async (req, res) => {
+    try {
+        if (!(req.user.isOwner || ["mods", "packs", "presets"].some(p => req.user.perms.includes(p)))) return fail(res, 403, "ليست لديك صلاحية");
+        const url = String((req.body || {}).url || "").trim(); if (!isHttpUrl(url)) return fail(res, 400, "رابط غير صالح");
+        const r = await probeUrl(url, { hash: (req.body || {}).hash === true, timeout: (req.body || {}).hash ? 60000 : 10000 });
+        res.json({ success: true, ...r, sizeLabel: fmtSize(r.sizeBytes) });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+
+const _alertTime = new Map();
+async function linkAlert(kind, name, type, url, status, fails) {
+    const bad = kind === "down";
+    let host = url; try { const x = new URL(url); host = x.host + trunc(x.pathname, 60); } catch {}
+    await discordPost(APP_OPS_CHANNEL_ID, {
+        author: { name: "CA Store • مراقبة الروابط" }, title: (bad ? "🔴 رابط لا يعمل — " : "🟢 عاد الرابط للعمل — ") + trunc(name, 90), color: bad ? 0xE5484D : 0x3DDC97,
+        description: bad ? "فشل الفحص عدة مرات متتالية. العملاء قد لا يستطيعون تحميل هذا العنصر." : "تم استعادة الرابط وهو يعمل الآن.",
+        fields: [{ name: "النوع", value: (TYPE_META[type] || {}).label || type, inline: true }, { name: "الحالة", value: "`" + trunc(status, 60) + "`", inline: true }, ...(bad ? [{ name: "مرات الفشل", value: String(fails), inline: true }] : []), { name: "الرابط", value: "`" + trunc(host, 150) + "`", inline: false }],
+        footer: { text: "فحص تلقائي كل 30 دقيقة" }, timestamp: new Date().toISOString()
+    });
+}
+let _checking = false;
+async function runLinkCheck() {
+    if (_checking) return { running: true }; _checking = true;
+    const sum = { ok: 0, bad: 0 };
+    try {
+        const jobs = [];
+        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"]]) {
+            const r = await db.query(`SELECT * FROM ${table} WHERE deleted_at IS NULL AND published`);
+            r.rows.forEach(it => jobs.push({ table, type, it, id: it.id, name: it.name, url: it.url }));
+        }
+        (await db.query("SELECT * FROM app_packs WHERE deleted_at IS NULL AND published")).rows.forEach(p => (p.versions || []).forEach(v => v.url && jobs.push({ table: "app_packs", type: "pack", it: p, id: p.id, ver: v.version, name: `${p.name} ${v.version}`, url: v.url, sizeBytes: v.sizeBytes })));
+        let idx = 0;
+        const worker = async () => {
+            while (idx < jobs.length) {
+                const j = jobs[idx++], pr = await probeUrl(j.url, { timeout: 10000 });
+                let status = pr.ok ? "OK" : (pr.status ? "HTTP " + pr.status : (pr.error || "فشل"));
+                const expect = Number(j.it.size_bytes || j.sizeBytes || 0);
+                if (pr.ok && expect && pr.sizeBytes && Math.abs(expect - pr.sizeBytes) > 1024) status = "OK (الحجم مختلف عن المسجّل)";
+                if (pr.ok) sum.ok++; else sum.bad++;
+                if (j.table === "app_packs") {
+                    const st = (j.it.link_state || {})[j.ver] || { fails: 0, alerted: false }; const fails = pr.ok ? 0 : (st.fails || 0) + 1;
+                    let alerted = st.alerted;
+                    if (!pr.ok && fails >= 2 && !alerted) { alerted = true; await linkAlert("down", j.name, "pack", j.url, status, fails); }
+                    if (pr.ok && alerted) { alerted = false; await linkAlert("up", j.name, "pack", j.url, status, 0); }
+                    await db.query(`UPDATE app_packs SET link_state = jsonb_set(COALESCE(link_state,'{}'::jsonb), $2::text[], $3::jsonb) WHERE id=$1`, [j.id, [j.ver], JSON.stringify({ ok: pr.ok, status, at: new Date().toISOString(), fails, alerted })]);
+                } else {
+                    const fails = pr.ok ? 0 : (j.it.link_fail_count || 0) + 1; let alerted = j.it.link_alerted;
+                    if (!pr.ok && fails >= 2 && !alerted) { alerted = true; await linkAlert("down", j.name, j.type, j.url, status, fails); }
+                    if (pr.ok && alerted) { alerted = false; await linkAlert("up", j.name, j.type, j.url, status, 0); }
+                    await db.query(`UPDATE ${j.table} SET link_ok=$1, link_status=$2, link_checked_at=NOW(), link_fail_count=$3, link_alerted=$4 WHERE id=$5`, [pr.ok, trunc(status, 80), fails, alerted, j.id]);
+                }
+            }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+    } catch (e) { console.error("link check:", e); }
+    finally { _checking = false; }
+    return sum;
+}
+app.get("/api/v4/admin/links", v4AdminLimiter, appAdmin("system"), async (req, res) => {
+    try {
+        const items = [];
+        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"]]) (await db.query(`SELECT id,name,link_ok,link_status,link_checked_at,link_fail_count FROM ${table} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => items.push({ type, id: r.id, name: r.name, ok: r.link_ok, status: r.link_status, checkedAt: r.link_checked_at, fails: r.link_fail_count }));
+        (await db.query("SELECT id,name,link_state FROM app_packs WHERE deleted_at IS NULL AND published")).rows.forEach(p => Object.entries(p.link_state || {}).forEach(([v, s]) => items.push({ type: "pack", id: p.id, name: p.name + " " + v, ok: s.ok, status: s.status, checkedAt: s.at, fails: s.fails })));
+        res.json({ success: true, checking: _checking, items, summary: { ok: items.filter(i => i.ok === true).length, bad: items.filter(i => i.ok === false).length, unknown: items.filter(i => i.ok === null || i.ok === undefined).length } });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.post("/api/v4/admin/links/check", v4AdminLimiter, appAdmin("system"), async (req, res) => {
+    const r = await runLinkCheck(); await v4Audit(req, "links-check", "system", "all", jstr(r)); res.json({ success: true, ...r });
+});
+
+/* ───────── نظرة عامة ───────── */
+app.get("/api/v4/admin/overview", v4AdminLimiter, appAdmin("any"), async (req, res) => {
+    try {
+        const one = async (sql, p = []) => (await db.query(sql, p)).rows[0];
+        const [u, ban, act] = [await one("SELECT COUNT(*)::int c FROM users"), await one("SELECT COUNT(*)::int c FROM app_bans"), await one("SELECT COUNT(*)::int c FROM users WHERE last_login > NOW() - INTERVAL '7 days'")];
+        const dl = await one("SELECT COUNT(*) FILTER (WHERE created_at >= date_trunc('day',NOW()))::int today, COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int d7, COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int d30 FROM app_downloads");
+        const series = (await db.query(`SELECT to_char(d,'YYYY-MM-DD') AS day, COALESCE(c,0)::int AS count FROM generate_series((NOW()::date - 13), NOW()::date, '1 day') d LEFT JOIN (SELECT created_at::date AS dd, COUNT(*) c FROM app_downloads GROUP BY 1) x ON x.dd = d::date ORDER BY d`)).rows;
+        const topRows = (await db.query("SELECT item_type, item_id, COUNT(*)::int c FROM app_downloads WHERE created_at > NOW() - INTERVAL '30 days' GROUP BY 1,2 ORDER BY c DESC LIMIT 5")).rows;
+        const nameOf = async (t, id) => { const m = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id] }[t]; if (!m) return id; const r = await db.query(`SELECT name FROM ${m[0]} WHERE ${m[1]}=$1`, [m[2]]); return r.rows[0] ? r.rows[0].name : id; };
+        const top = []; for (const r of topRows) top.push({ type: r.item_type, id: r.item_id, name: await nameOf(r.item_type, r.item_id), count: r.c });
+        const unused = (await db.query("SELECT 'mod' AS type, id::text AS id, name FROM app_mods WHERE deleted_at IS NULL AND published AND NOT EXISTS (SELECT 1 FROM app_downloads d WHERE d.item_type='mod' AND d.item_id=app_mods.id::text AND d.created_at > NOW() - INTERVAL '30 days') ORDER BY id LIMIT 20")).rows;
+        const rep = await one("SELECT COUNT(*) FILTER (WHERE NOT ok AND created_at >= date_trunc('day',NOW()))::int failed, COUNT(*) FILTER (WHERE ok AND created_at > NOW() - INTERVAL '24 hours')::int okd FROM app_reports");
+        let ok = 0, bad = 0, unk = 0;
+        for (const t of ["app_mods", "app_presets", "app_customs"]) (await db.query(`SELECT link_ok FROM ${t} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => { if (r.link_ok === true) ok++; else if (r.link_ok === false) bad++; else unk++; });
+        (await db.query("SELECT link_state FROM app_packs WHERE deleted_at IS NULL AND published")).rows.forEach(p => Object.values(p.link_state || {}).forEach(s => { if (s.ok) ok++; else bad++; }));
+        const cnt = async (t) => (await one(`SELECT COUNT(*)::int c FROM ${t} WHERE deleted_at IS NULL`)).c;
+        const trash = (await Promise.all(["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles"].map(async t => (await one(`SELECT COUNT(*)::int c FROM ${t} WHERE deleted_at IS NOT NULL`)).c))).reduce((a, b) => a + b, 0);
+        res.json({ success: true, users: { total: u.c, active7d: act.c, banned: ban.c }, downloads: { today: dl.today, d7: dl.d7, d30: dl.d30, series }, top, unused, failuresToday: rep.failed, reportsOk24h: rep.okd, links: { ok, bad, unknown: unk }, counts: { mods: await cnt("app_mods"), packs: await cnt("app_packs"), presets: await cnt("app_presets"), bundles: await cnt("app_bundles"), trash } });
+    } catch (e) { console.error("overview:", e); fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── المستخدمون (حظر / إعادة ضبط جهاز) ───────── */
+app.get("/api/v4/admin/users", v4AdminLimiter, appAdmin("users"), async (req, res) => {
+    try {
+        const q = String(req.query.q || "").trim().replace(/[^\d]/g, "").slice(0, 25), limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 25, 1), 100), page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+        const where = q ? "WHERE u.discord_id LIKE $3" : "", args = q ? [limit, (page - 1) * limit, "%" + q + "%"] : [limit, (page - 1) * limit];
+        const r = await db.query(`SELECT u.discord_id, u.hwid IS NOT NULL AS has_device, u.last_login, b.reason AS ban_reason, (b.discord_id IS NOT NULL) AS banned FROM users u LEFT JOIN app_bans b ON b.discord_id=u.discord_id ${where} ORDER BY u.last_login DESC NULLS LAST LIMIT $1 OFFSET $2`, args);
+        const total = (await db.query(`SELECT COUNT(*)::int c FROM users u ${q ? "WHERE u.discord_id LIKE $1" : ""}`, q ? ["%" + q + "%"] : [])).rows[0].c;
+        res.json({ success: true, total, page, users: r.rows.map(x => { const c = _memberCache.get(x.discord_id); return { discordId: x.discord_id, name: c && c.v.name || "", plans: c ? c.v.plans : null, hasDevice: x.has_device, lastLogin: x.last_login, banned: x.banned, banReason: x.ban_reason || "" }; }) });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+const validId = (x) => /^\d{5,25}$/.test(String(x));
+app.post("/api/v4/admin/users/:id/ban", v4AdminLimiter, appAdmin("users"), async (req, res) => {
+    try {
+        const id = req.params.id; if (!validId(id)) return fail(res, 400, "معرّف غير صالح");
+        if (String(id) === String(ADMIN_DISCORD_ID)) return fail(res, 400, "لا يمكن حظر المالك");
+        await db.query("INSERT INTO app_bans (discord_id,reason,created_by) VALUES ($1,$2,$3) ON CONFLICT (discord_id) DO UPDATE SET reason=EXCLUDED.reason", [id, trunc((req.body || {}).reason || "", 200), req.user.discordId]);
+        await v4Audit(req, "ban", "user", id, trunc((req.body || {}).reason || "", 200)); res.json({ success: true });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.post("/api/v4/admin/users/:id/unban", v4AdminLimiter, appAdmin("users"), async (req, res) => {
+    try { const id = req.params.id; if (!validId(id)) return fail(res, 400, "معرّف غير صالح"); await db.query("DELETE FROM app_bans WHERE discord_id=$1", [id]); await v4Audit(req, "unban", "user", id, ""); res.json({ success: true }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+app.post("/api/v4/admin/users/:id/reset-device", v4AdminLimiter, appAdmin("users"), async (req, res) => {
+    try { const id = req.params.id; if (!validId(id)) return fail(res, 400, "معرّف غير صالح"); const r = await db.query("UPDATE users SET hwid=NULL WHERE discord_id=$1", [id]); if (!r.rowCount) return fail(res, 404, "المستخدم غير موجود"); await v4Audit(req, "reset-device", "user", id, ""); res.json({ success: true }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── الأدمنز (للمالك فقط) ───────── */
+app.get("/api/v4/admin/admins", v4AdminLimiter, appAdmin("owner"), async (req, res) => {
+    try { const r = await db.query("SELECT * FROM app_admins ORDER BY created_at"); res.json({ success: true, allPerms: APP_PERMS, owner: String(ADMIN_DISCORD_ID), admins: r.rows.map(toCamel) }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+app.post("/api/v4/admin/admins", v4AdminLimiter, appAdmin("owner"), async (req, res) => {
+    try {
+        const b = req.body || {}, id = String(b.discordId || ""); if (!validId(id)) return fail(res, 400, "معرّف ديسكورد غير صالح");
+        if (id === String(ADMIN_DISCORD_ID)) return fail(res, 400, "المالك لديه كل الصلاحيات");
+        const perms = [...new Set((Array.isArray(b.perms) ? b.perms : []).filter(p => APP_PERMS.includes(p)))];
+        await db.query("INSERT INTO app_admins (discord_id,name,role,perms,created_by) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (discord_id) DO UPDATE SET name=EXCLUDED.name, role=EXCLUDED.role, perms=EXCLUDED.perms", [id, trunc(b.name || "", 40), trunc(b.role || "مشرف", 30), perms, req.user.discordId]);
+        _adminRows.at = 0; await v4Audit(req, "admin-set", "admin", id, "الصلاحيات: " + perms.join("، ")); res.json({ success: true });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.delete("/api/v4/admin/admins/:id", v4AdminLimiter, appAdmin("owner"), async (req, res) => {
+    try { const id = req.params.id; if (!validId(id)) return fail(res, 400, "معرّف غير صالح"); await db.query("DELETE FROM app_admins WHERE discord_id=$1", [id]); _adminRows.at = 0; await v4Audit(req, "admin-remove", "admin", id, ""); res.json({ success: true }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── السجلات والتقارير ───────── */
+const csvCell = (v) => { v = String(v ?? ""); if (/^[=+\-@]/.test(v)) v = "'" + v; return '"' + v.replace(/"/g, '""') + '"'; };
+const auditRows = async (q) => { const qq = String(q.q || "").trim().slice(0, 60), limit = Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 1000); const args = [limit]; let where = ""; if (qq) { args.push("%" + qq + "%"); where = "WHERE (actor_name ILIKE $2 OR actor_id ILIKE $2 OR action ILIKE $2 OR target ILIKE $2 OR detail ILIKE $2)"; } if (q.type) { args.push(String(q.type).slice(0, 30)); where += (where ? " AND " : "WHERE ") + "target_type=$" + args.length; } return (await db.query(`SELECT * FROM app_audit ${where} ORDER BY id DESC LIMIT $1`, args)).rows; };
+app.get("/api/v4/admin/audit", v4AdminLimiter, appAdmin("logs"), async (req, res) => { try { res.json({ success: true, logs: (await auditRows(req.query)).map(toCamel) }); } catch (e) { fail(res, 500, "خطأ في الخادم"); } });
+app.get("/api/v4/admin/audit.csv", v4AdminLimiter, appAdmin("logs"), async (req, res) => {
+    try { const rows = await auditRows({ ...req.query, limit: 1000 }); res.setHeader("Content-Type", "text/csv; charset=utf-8"); res.setHeader("Content-Disposition", "attachment; filename=audit.csv"); res.send("﻿" + ["الوقت,المنفّذ,المعرّف,العملية,النوع,الهدف,التفاصيل", ...rows.map(r => [r.created_at.toISOString(), r.actor_name, r.actor_id, r.action, r.target_type, r.target, r.detail].map(csvCell).join(","))].join("\n")); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+const reportRows = async (q) => { const limit = Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 1000); const where = q.ok === "0" ? "WHERE NOT ok" : q.ok === "1" ? "WHERE ok" : ""; return (await db.query(`SELECT * FROM app_reports ${where} ORDER BY id DESC LIMIT $1`, [limit])).rows; };
+app.get("/api/v4/admin/reports", v4AdminLimiter, appAdmin("logs"), async (req, res) => { try { res.json({ success: true, reports: (await reportRows(req.query)).map(toCamel) }); } catch (e) { fail(res, 500, "خطأ في الخادم"); } });
+app.get("/api/v4/admin/reports.csv", v4AdminLimiter, appAdmin("logs"), async (req, res) => {
+    try { const rows = await reportRows({ ...req.query, limit: 1000 }); res.setHeader("Content-Type", "text/csv; charset=utf-8"); res.setHeader("Content-Disposition", "attachment; filename=reports.csv"); res.send("﻿" + ["الوقت,العميل,النوع,العنصر,الإصدار,النتيجة,الخطأ,إصدار البرنامج", ...rows.map(r => [r.created_at.toISOString(), r.discord_id, r.item_type, r.item_name, r.version, r.ok ? "نجح" : "فشل", r.error, r.app_version].map(csvCell).join(","))].join("\n")); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── الإعلانات ───────── */
+const ANN_KINDS = ["info", "warning", "maintenance", "news", "release"];
+app.get("/api/v4/admin/announcements", v4AdminLimiter, appAdmin("announcements"), async (req, res) => { try { res.json({ success: true, items: (await db.query("SELECT * FROM app_announcements ORDER BY id DESC LIMIT 200")).rows.map(toCamel) }); } catch (e) { fail(res, 500, "خطأ في الخادم"); } });
+function annBody(b) {
+    const kind = String(b.kind || "info"); if (!ANN_KINDS.includes(kind)) throw new Error("نوع الإعلان غير صالح");
+    return { kind, title: FIELD.s(b.title, { label: "العنوان", req: true, max: 120 }), body: FIELD.s(b.body, { label: "النص", max: 1500 }), active: b.active !== false, starts_at: FIELD.ts(b.startsAt, { label: "البداية" }), ends_at: FIELD.ts(b.endsAt, { label: "النهاية" }), min_app_version: FIELD.s(b.minAppVersion, { label: "إصدار البرنامج", max: 20 }) };
+}
+app.post("/api/v4/admin/announcements", v4AdminLimiter, appAdmin("announcements"), async (req, res) => {
+    try { const v = annBody(req.body || {}); const r = await db.query("INSERT INTO app_announcements (kind,title,body,active,starts_at,ends_at,min_app_version,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *", [v.kind, v.title, v.body, v.active, v.starts_at, v.ends_at, v.min_app_version, req.user.discordId]); await v4Audit(req, "create", "announcement", v.title, v.kind); res.json({ success: true, item: toCamel(r.rows[0]) }); }
+    catch (e) { if (/مطلوب|غير صالح|طويل/.test(e.message)) return fail(res, 400, e.message); console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.put("/api/v4/admin/announcements/:id", v4AdminLimiter, appAdmin("announcements"), async (req, res) => {
+    try { const v = annBody(req.body || {}); const r = await db.query("UPDATE app_announcements SET kind=$1,title=$2,body=$3,active=$4,starts_at=$5,ends_at=$6,min_app_version=$7 WHERE id=$8 RETURNING *", [v.kind, v.title, v.body, v.active, v.starts_at, v.ends_at, v.min_app_version, parseInt(req.params.id, 10) || 0]); if (!r.rows.length) return fail(res, 404, "غير موجود"); await v4Audit(req, "update", "announcement", v.title, ""); res.json({ success: true, item: toCamel(r.rows[0]) }); }
+    catch (e) { if (/مطلوب|غير صالح|طويل/.test(e.message)) return fail(res, 400, e.message); console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+app.delete("/api/v4/admin/announcements/:id", v4AdminLimiter, appAdmin("announcements"), async (req, res) => {
+    try { const r = await db.query("DELETE FROM app_announcements WHERE id=$1 RETURNING title", [parseInt(req.params.id, 10) || 0]); if (!r.rows.length) return fail(res, 404, "غير موجود"); await v4Audit(req, "delete", "announcement", r.rows[0].title, ""); res.json({ success: true }); } catch (e) { fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── الإعدادات ───────── */
+const settingsView = (s) => ({ maintenanceOn: s.maintenance_on === "1", maintenanceMessage: s.maintenance_message || "", minVersion: s.min_version || "", signLinks: s.sign_links === "1", legacyPublicLinks: s.legacy_public_links === "1", adminLock: s.admin_lock === "1", adminHwids: s.admin_hwids || "", signingConfigured: !!LINK_SIGNING_SECRET });
+app.get("/api/v4/admin/settings", v4AdminLimiter, appAdmin("system"), async (req, res) => { try { const s = await getSettings(true); const v = settingsView(s); if (!req.user.isOwner) { delete v.adminHwids; } res.json({ success: true, settings: v }); } catch (e) { fail(res, 500, "خطأ في الخادم"); } });
+app.put("/api/v4/admin/settings", v4AdminLimiter, appAdmin("system"), async (req, res) => {
+    try {
+        const b = req.body || {}, changes = [];
+        const set = async (k, v, label) => { await setSetting(k, v); changes.push(label); };
+        if (b.maintenanceOn !== undefined) await set("maintenance_on", b.maintenanceOn ? "1" : "0", "الصيانة=" + (b.maintenanceOn ? "تشغيل" : "إيقاف"));
+        if (b.maintenanceMessage !== undefined) await set("maintenance_message", trunc(b.maintenanceMessage, 300), "رسالة الصيانة");
+        if (b.minVersion !== undefined) { const v = String(b.minVersion || "").trim(); if (v && !/^\d+(\.\d+){0,3}$/.test(v)) return fail(res, 400, "رقم الإصدار غير صالح"); await set("min_version", v, "أدنى إصدار=" + v); }
+        if (b.signLinks !== undefined) { if (b.signLinks && !LINK_SIGNING_SECRET) return fail(res, 400, "لم يتم ضبط LINK_SIGNING_SECRET في السيرفر"); await set("sign_links", b.signLinks ? "1" : "0", "الروابط المؤقتة=" + (b.signLinks ? "تشغيل" : "إيقاف")); }
+        if (b.legacyPublicLinks !== undefined) await set("legacy_public_links", b.legacyPublicLinks ? "1" : "0", "الروابط العامة للإصدارات القديمة=" + (b.legacyPublicLinks ? "تشغيل" : "إيقاف"));
+        if (b.adminLock !== undefined || b.adminHwids !== undefined) {
+            if (!req.user.isOwner) return fail(res, 403, "قفل الأجهزة للمالك فقط", { code: "FORBIDDEN" });
+            if (b.adminLock !== undefined) await set("admin_lock", b.adminLock ? "1" : "0", "قفل أجهزة الأدمن=" + (b.adminLock ? "تشغيل" : "إيقاف"));
+            if (b.adminHwids !== undefined) await set("admin_hwids", String(b.adminHwids).split(",").map(x => x.trim()).filter(x => /^[\w\-]{6,80}$/.test(x)).join(","), "قائمة أجهزة الأدمن");
+        }
+        await v4Audit(req, "settings", "system", "settings", changes.join(" | ")); res.json({ success: true, settings: settingsView(await getSettings(true)) });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── المحذوفات (30 يوماً) ───────── */
+app.get("/api/v4/admin/trash", v4AdminLimiter, appAdmin("any"), async (req, res) => {
+    try {
+        const out = [];
+        for (const [kind, def] of Object.entries(DEFS)) {
+            if (!req.user.isOwner && !req.user.perms.includes(def.perm)) continue;
+            (await db.query(`SELECT * FROM ${def.table} WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`)).rows.forEach(r => out.push({ kind, id: r[def.idCol || "id"], name: r.name, deletedAt: r.deleted_at, daysLeft: Math.max(0, 30 - Math.floor((Date.now() - new Date(r.deleted_at)) / 864e5)) }));
+        }
+        res.json({ success: true, items: out });
+    } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
+});
+
+/* ───────── مهام الخلفية ───────── */
+async function schedulerTick() {
+    try {
+        const r = await db.query("UPDATE app_mods SET published=TRUE, updated_at=NOW() WHERE deleted_at IS NULL AND NOT published AND publish_at IS NOT NULL AND publish_at <= NOW() RETURNING *");
+        for (const m of r.rows) {
+            await db.query("UPDATE app_mods SET notified_version=$1 WHERE id=$2", [m.version, m.id]);
+            await announceRelease("mod", { id: m.id, name: m.name, version: m.version, changelog: m.changelog, description: m.description, cover: m.cover, plans: m.plans, sizeLabel: fmtSize(m.size_bytes), categoryName: await catNameOf(m.category) });
+        }
+    } catch (e) { console.error("scheduler:", e.message); }
+}
+async function trashPurge() {
+    try { for (const t of ["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles", "app_categories"]) await db.query(`DELETE FROM ${t} WHERE deleted_at < NOW() - INTERVAL '30 days'`); await db.query("DELETE FROM app_reports WHERE created_at < NOW() - INTERVAL '120 days'"); await db.query("DELETE FROM app_downloads WHERE created_at < NOW() - INTERVAL '400 days'"); } catch (e) { console.error("purge:", e.message); }
+}
+(async () => {
+    try {
+        await v4Init();
+        setTimeout(() => v4Seed().catch(e => console.error("seed:", e.message)), 1500);
+        if (process.env.APP_DISABLE_JOBS !== "1") {
+            setInterval(schedulerTick, 60 * 1000).unref();
+            setInterval(trashPurge, 24 * 3600 * 1000).unref();
+            setInterval(() => runLinkCheck(), 30 * 60 * 1000).unref();
+            setTimeout(() => runLinkCheck(), 90 * 1000).unref();
+        }
+    } catch (e) { console.error("v4 init error:", e); }
+})();
 
 app.listen(process.env.PORT || 3000, () => console.log("✅ Backend running"));
