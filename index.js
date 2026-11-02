@@ -2294,7 +2294,7 @@ const APP_RELEASES_CHANNEL_ID = process.env.APP_RELEASES_CHANNEL_ID || "14798196
 const LINK_SIGNING_SECRET = process.env.LINK_SIGNING_SECRET || "";
 const ALLOW_PRIVATE_URLS = process.env.APP_ALLOW_PRIVATE_URLS === "1";                      // للاختبار فقط
 const APP_PERMS = ["mods", "packs", "presets", "bundles", "announcements", "users", "logs", "system"];
-const ITEM_TYPES = ["mod", "pack", "preset", "custom", "bundle"];
+const ITEM_TYPES = ["mod", "pack", "preset", "custom", "bundle", "sound"];
 
 const v4Limiter = (max, windowMs = 60 * 1000) => rateLimit({ windowMs, max, standardHeaders: true, legacyHeaders: false, message: { success: false, message: "طلبات كثيرة، حاول بعد قليل" } });
 const v4ConfigLimiter = v4Limiter(60), v4ReadLimiter = v4Limiter(120), v4LinkLimiter = v4Limiter(40), v4ReportLimiter = v4Limiter(60), v4AdminLimiter = v4Limiter(300);
@@ -2320,6 +2320,11 @@ async function v4Init() {
     await q(`CREATE TABLE IF NOT EXISTS app_presets (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, file TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', img TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '',
         url TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0, published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0,
+        link_ok BOOLEAN, link_status TEXT NOT NULL DEFAULT '', link_checked_at TIMESTAMPTZ, link_fail_count INT NOT NULL DEFAULT 0, link_alerted BOOLEAN NOT NULL DEFAULT FALSE,
+        notified_version TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
+    await q(`CREATE TABLE IF NOT EXISTS app_sounds (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, file TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', img TEXT NOT NULL DEFAULT '', size TEXT NOT NULL DEFAULT '', weapon TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', size_bytes BIGINT NOT NULL DEFAULT 0, plans TEXT[] NOT NULL DEFAULT '{}', published BOOLEAN NOT NULL DEFAULT TRUE, sort INT NOT NULL DEFAULT 0, downloads INT NOT NULL DEFAULT 0,
         link_ok BOOLEAN, link_status TEXT NOT NULL DEFAULT '', link_checked_at TIMESTAMPTZ, link_fail_count INT NOT NULL DEFAULT 0, link_alerted BOOLEAN NOT NULL DEFAULT FALSE,
         notified_version TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), deleted_at TIMESTAMPTZ)`);
     await q(`CREATE TABLE IF NOT EXISTS app_customs (
@@ -2628,7 +2633,8 @@ app.get("/api/v4/library", v4ReadLimiter, appAuth, async (req, res) => {
             versions: (p.versions || []).map(v => ({ version: v.version, date: v.date, latest: !!v.latest, size: v.size, features: v.features || [], changelog: v.changelog || "", hasHash: !!v.sha256 })) }));
         const presets = (await db.query("SELECT * FROM app_presets WHERE deleted_at IS NULL AND published AND file ~* '\\.ini$' ORDER BY sort,id")).rows.map(p => ({ id: p.id, name: p.name, file: p.file, description: p.description, img: p.img, size: p.size, downloads: p.downloads }));
         const customizations = (await db.query("SELECT * FROM app_customs WHERE deleted_at IS NULL AND published ORDER BY sort,id")).rows.map(c => ({ id: c.id, name: c.name, description: c.description, file: c.file, destination: c.destination, icon: c.icon, warning: c.warning }));
-        res.json({ success: true, categories, mods: modViews, bundles, packs, presets, customizations });
+        const sounds = (await db.query("SELECT * FROM app_sounds WHERE deleted_at IS NULL AND published ORDER BY sort,id")).rows.map(x => ({ id: x.id, name: x.name, file: x.file, description: x.description, img: x.img, weapon: x.weapon, sizeBytes: Number(x.size_bytes) || 0, sizeLabel: x.size || fmtSize(x.size_bytes), plans: x.plans, unlocked: canUse(u, x.plans, []), downloads: x.downloads }));
+        res.json({ success: true, categories, mods: modViews, bundles, packs, presets, customizations, sounds });
     } catch (e) { console.error("library:", e); fail(res, 500, "تعذّر تحميل المكتبة"); }
 });
 
@@ -2654,6 +2660,12 @@ app.post("/api/v4/link", v4LinkLimiter, appAuth, async (req, res) => {
             const ver = (item.versions || []).find(v => req.body.version ? v.version === String(req.body.version) : v.latest) || (item.versions || [])[0];
             if (!ver || !ver.url) return fail(res, 404, "الإصدار غير موجود", { code: "NOT_FOUND" });
             out = { url: ver.url, sha256: ver.sha256 || "", sizeBytes: Number(ver.sizeBytes) || 0, fileName: `${item.id}-${ver.version}.zip`, name: `${item.name} ${ver.version}`, version: ver.version };
+        } else if (type === "sound") {
+            table = "app_sounds";
+            item = (await db.query("SELECT * FROM app_sounds WHERE id=$1 AND deleted_at IS NULL AND published", [id])).rows[0];
+            if (!item) return fail(res, 404, "الساوند غير موجود", { code: "NOT_FOUND" });
+            if (!canUse(u, item.plans, [])) return fail(res, 403, "نسختك لا تسمح بتحميل هذا الساوند", { code: "LOCKED" });
+            out = { url: item.url, sha256: item.sha256, sizeBytes: Number(item.size_bytes) || 0, fileName: item.file, name: item.name };
         } else if (type === "preset" || type === "custom") {
             table = type === "preset" ? "app_presets" : "app_customs";
             item = (await db.query(`SELECT * FROM ${table} WHERE id=$1 AND deleted_at IS NULL AND published`, [id])).rows[0];
@@ -2678,7 +2690,7 @@ app.post("/api/v4/report", v4ReportLimiter, appAuth, async (req, res) => {
         const version = trunc(b.version || "", 30), error = trunc(b.error || "", 400), appVersion = trunc(b.appVersion || "", 20);
         let name = id;
         try {
-            const t = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id], bundle: ["app_bundles", "id", parseInt(id, 10) || 0] }[type];
+            const t = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id], sound: ["app_sounds", "id", id], bundle: ["app_bundles", "id", parseInt(id, 10) || 0] }[type];
             const r = await db.query(`SELECT name FROM ${t[0]} WHERE ${t[1]}=$1`, [t[2]]); if (r.rows[0]) name = r.rows[0].name;
             if (type === "mod") await db.query(`UPDATE app_mods SET ${ok ? "installs_ok" : "installs_fail"} = ${ok ? "installs_ok" : "installs_fail"} + 1 WHERE id=$1`, [t[2]]);
         } catch {}
@@ -2741,7 +2753,7 @@ app.get("/api/v4/whats-new", v4ReadLimiter, appAuth, async (req, res) => {
 });
 
 /* ───────── إشعارات الإصدارات (روم الإصدارات) ───────── */
-const TYPE_META = { mod: { label: "مود", color: 0x5B8DEF, icon: "📦" }, pack: { label: "باك جرافيكس", color: 0xB48CFF, icon: "🎨" }, preset: { label: "فلتر", color: 0xF5B84A, icon: "🎛️" }, bundle: { label: "حزمة مودات", color: 0x3DDC97, icon: "🧰" }, custom: { label: "تخصيص", color: 0x9AA4B2, icon: "⚙️" } };
+const TYPE_META = { mod: { label: "مود", color: 0x5B8DEF, icon: "📦" }, pack: { label: "باك جرافيكس", color: 0xB48CFF, icon: "🎨" }, preset: { label: "فلتر", color: 0xF5B84A, icon: "🎛️" }, bundle: { label: "حزمة مودات", color: 0x3DDC97, icon: "🧰" }, custom: { label: "تخصيص", color: 0x9AA4B2, icon: "⚙️" }, sound: { label: "ساوند سلاح", color: 0xE5534B, icon: "🔫" } };
 async function announceRelease(type, it, { update = false } = {}) {
     try {
         const meta = TYPE_META[type] || TYPE_META.mod;
@@ -2807,6 +2819,9 @@ const DEFS = {
     bundles: { table: "app_bundles", perm: "bundles", audit: "bundle", idType: "int", release: "bundle", ts: true, fields: [
         ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["description", "description", "s", { label: "الوصف", max: 400 }], ["cover", "cover", "cov", { label: "الغلاف" }], ["modIds", "mod_ids", "ia", { max: 40 }], ["plans", "plans", "plans", { label: "النسخ" }],
         ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
+    sounds: { table: "app_sounds", perm: "presets", audit: "sound", idType: "text", release: "sound", ts: true, fields: [
+        ["name", "name", "s", { label: "الاسم", req: true, max: 80 }], ["file", "file", "f", { label: "اسم الملف" }], ["description", "description", "s", { label: "الوصف", max: 300 }], ["weapon", "weapon", "s", { label: "السلاح", max: 60 }], ["img", "img", "cov", { label: "الصورة" }], ["size", "size", "s", { label: "الحجم", max: 20 }],
+        ["url", "url", "u", { label: "رابط التحميل", req: true }], ["sha256", "sha256", "h", { label: "البصمة" }], ["sizeBytes", "size_bytes", "n", { label: "الحجم" }], ["plans", "plans", "plans", { label: "النسخ" }], ["published", "published", "b", {}], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] },
     categories: { table: "app_categories", perm: "mods", audit: "category", idType: "text", idCol: "slug", ts: false, fields: [
         ["name", "name", "s", { label: "الاسم", req: true, max: 40 }], ["icon", "icon", "s", { label: "الأيقونة", max: 30 }], ["sort", "sort", "i", { label: "الترتيب", max: 100000 }]] }
 };
@@ -2835,9 +2850,10 @@ for (const [route, def] of Object.entries(DEFS)) {
             const v = readBody(def, req.body || {}, false);
             if (route === "mods") { if (!(await db.query("SELECT 1 FROM app_categories WHERE slug=$1 AND deleted_at IS NULL", [v.category])).rows.length) return fail(res, 400, "القسم غير موجود"); v.created_by = req.user.discordId; v.updated_by = req.user.discordId; }
             let id;
-            if (def.idType === "text") { id = slugify(req.body.id || req.body.slug || v.name || v.plan) || (route === "categories" || route === "presets" || route === "customizations" ? "x" + crypto.randomBytes(3).toString("hex") : ""); if (route === "packs") id = String(req.body.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 20) || ("P" + Date.now().toString(36)); if (id.length < 2) return fail(res, 400, "المعرّف غير صالح"); v[idCol] = id; }
-            if (route === "presets" || route === "customizations") { v.file = v.file || ""; if (!v.file) return fail(res, 400, "اسم الملف مطلوب"); }
+            if (def.idType === "text") { id = slugify(req.body.id || req.body.slug || v.name || v.plan) || (route === "categories" || route === "presets" || route === "customizations" || route === "sounds" ? "x" + crypto.randomBytes(3).toString("hex") : ""); if (route === "packs") id = String(req.body.id || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 20) || ("P" + Date.now().toString(36)); if (id.length < 2) return fail(res, 400, "المعرّف غير صالح"); v[idCol] = id; }
+            if (route === "presets" || route === "customizations" || route === "sounds") { v.file = v.file || ""; if (!v.file) return fail(res, 400, "اسم الملف مطلوب"); }
             if (route === "presets" && !/\.ini$/i.test(v.file)) return fail(res, 400, "الفلاتر يجب أن تكون بصيغة .ini");
+            if (route === "sounds" && !/\.(rpf|zip)$/i.test(v.file)) return fail(res, 400, "الساوند يجب أن يكون .rpf أو .zip");
             const initialNotify = def.release && v.published !== false;
             if (route === "mods" && v.publish_at && new Date(v.publish_at) > new Date()) v.published = false;       // مجدول
             const cols = Object.keys(v);
@@ -2928,7 +2944,7 @@ async function runLinkCheck() {
     const sum = { ok: 0, bad: 0 };
     try {
         const jobs = [];
-        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"]]) {
+        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"], ["app_sounds", "sound"]]) {
             const r = await db.query(`SELECT * FROM ${table} WHERE deleted_at IS NULL AND published`);
             r.rows.forEach(it => jobs.push({ table, type, it, id: it.id, name: it.name, url: it.url }));
         }
@@ -2963,7 +2979,7 @@ async function runLinkCheck() {
 app.get("/api/v4/admin/links", v4AdminLimiter, appAdmin("system"), async (req, res) => {
     try {
         const items = [];
-        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"]]) (await db.query(`SELECT id,name,link_ok,link_status,link_checked_at,link_fail_count FROM ${table} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => items.push({ type, id: r.id, name: r.name, ok: r.link_ok, status: r.link_status, checkedAt: r.link_checked_at, fails: r.link_fail_count }));
+        for (const [table, type] of [["app_mods", "mod"], ["app_presets", "preset"], ["app_customs", "custom"], ["app_sounds", "sound"]]) (await db.query(`SELECT id,name,link_ok,link_status,link_checked_at,link_fail_count FROM ${table} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => items.push({ type, id: r.id, name: r.name, ok: r.link_ok, status: r.link_status, checkedAt: r.link_checked_at, fails: r.link_fail_count }));
         (await db.query("SELECT id,name,link_state FROM app_packs WHERE deleted_at IS NULL AND published")).rows.forEach(p => Object.entries(p.link_state || {}).forEach(([v, s]) => items.push({ type: "pack", id: p.id, name: p.name + " " + v, ok: s.ok, status: s.status, checkedAt: s.at, fails: s.fails })));
         res.json({ success: true, checking: _checking, items, summary: { ok: items.filter(i => i.ok === true).length, bad: items.filter(i => i.ok === false).length, unknown: items.filter(i => i.ok === null || i.ok === undefined).length } });
     } catch (e) { console.error(e); fail(res, 500, "خطأ في الخادم"); }
@@ -2980,15 +2996,15 @@ app.get("/api/v4/admin/overview", v4AdminLimiter, appAdmin("any"), async (req, r
         const dl = await one("SELECT COUNT(*) FILTER (WHERE created_at >= date_trunc('day',NOW()))::int today, COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days')::int d7, COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days')::int d30 FROM app_downloads");
         const series = (await db.query(`SELECT to_char(d,'YYYY-MM-DD') AS day, COALESCE(c,0)::int AS count FROM generate_series((NOW()::date - 13), NOW()::date, '1 day') d LEFT JOIN (SELECT created_at::date AS dd, COUNT(*) c FROM app_downloads GROUP BY 1) x ON x.dd = d::date ORDER BY d`)).rows;
         const topRows = (await db.query("SELECT item_type, item_id, COUNT(*)::int c FROM app_downloads WHERE created_at > NOW() - INTERVAL '30 days' GROUP BY 1,2 ORDER BY c DESC LIMIT 5")).rows;
-        const nameOf = async (t, id) => { const m = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id] }[t]; if (!m) return id; const r = await db.query(`SELECT name FROM ${m[0]} WHERE ${m[1]}=$1`, [m[2]]); return r.rows[0] ? r.rows[0].name : id; };
+        const nameOf = async (t, id) => { const m = { mod: ["app_mods", "id", parseInt(id, 10) || 0], pack: ["app_packs", "id", id], preset: ["app_presets", "id", id], custom: ["app_customs", "id", id], sound: ["app_sounds", "id", id] }[t]; if (!m) return id; const r = await db.query(`SELECT name FROM ${m[0]} WHERE ${m[1]}=$1`, [m[2]]); return r.rows[0] ? r.rows[0].name : id; };
         const top = []; for (const r of topRows) top.push({ type: r.item_type, id: r.item_id, name: await nameOf(r.item_type, r.item_id), count: r.c });
         const unused = (await db.query("SELECT 'mod' AS type, id::text AS id, name FROM app_mods WHERE deleted_at IS NULL AND published AND NOT EXISTS (SELECT 1 FROM app_downloads d WHERE d.item_type='mod' AND d.item_id=app_mods.id::text AND d.created_at > NOW() - INTERVAL '30 days') ORDER BY id LIMIT 20")).rows;
         const rep = await one("SELECT COUNT(*) FILTER (WHERE NOT ok AND created_at >= date_trunc('day',NOW()))::int failed, COUNT(*) FILTER (WHERE ok AND created_at > NOW() - INTERVAL '24 hours')::int okd FROM app_reports");
         let ok = 0, bad = 0, unk = 0;
-        for (const t of ["app_mods", "app_presets", "app_customs"]) (await db.query(`SELECT link_ok FROM ${t} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => { if (r.link_ok === true) ok++; else if (r.link_ok === false) bad++; else unk++; });
+        for (const t of ["app_mods", "app_presets", "app_customs", "app_sounds"]) (await db.query(`SELECT link_ok FROM ${t} WHERE deleted_at IS NULL AND published`)).rows.forEach(r => { if (r.link_ok === true) ok++; else if (r.link_ok === false) bad++; else unk++; });
         (await db.query("SELECT link_state FROM app_packs WHERE deleted_at IS NULL AND published")).rows.forEach(p => Object.values(p.link_state || {}).forEach(s => { if (s.ok) ok++; else bad++; }));
         const cnt = async (t) => (await one(`SELECT COUNT(*)::int c FROM ${t} WHERE deleted_at IS NULL`)).c;
-        const trash = (await Promise.all(["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles"].map(async t => (await one(`SELECT COUNT(*)::int c FROM ${t} WHERE deleted_at IS NOT NULL`)).c))).reduce((a, b) => a + b, 0);
+        const trash = (await Promise.all(["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles", "app_sounds"].map(async t => (await one(`SELECT COUNT(*)::int c FROM ${t} WHERE deleted_at IS NOT NULL`)).c))).reduce((a, b) => a + b, 0);
         res.json({ success: true, users: { total: u.c, active7d: act.c, banned: ban.c }, downloads: { today: dl.today, d7: dl.d7, d30: dl.d30, series }, top, unused, failuresToday: rep.failed, reportsOk24h: rep.okd, links: { ok, bad, unknown: unk }, counts: { mods: await cnt("app_mods"), packs: await cnt("app_packs"), presets: await cnt("app_presets"), bundles: await cnt("app_bundles"), trash } });
     } catch (e) { console.error("overview:", e); fail(res, 500, "خطأ في الخادم"); }
 });
@@ -3112,7 +3128,7 @@ async function schedulerTick() {
     } catch (e) { console.error("scheduler:", e.message); }
 }
 async function trashPurge() {
-    try { for (const t of ["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles", "app_categories"]) await db.query(`DELETE FROM ${t} WHERE deleted_at < NOW() - INTERVAL '30 days'`); await db.query("DELETE FROM app_reports WHERE created_at < NOW() - INTERVAL '120 days'"); await db.query("DELETE FROM app_downloads WHERE created_at < NOW() - INTERVAL '400 days'"); } catch (e) { console.error("purge:", e.message); }
+    try { for (const t of ["app_mods", "app_packs", "app_presets", "app_customs", "app_bundles", "app_categories", "app_sounds"]) await db.query(`DELETE FROM ${t} WHERE deleted_at < NOW() - INTERVAL '30 days'`); await db.query("DELETE FROM app_reports WHERE created_at < NOW() - INTERVAL '120 days'"); await db.query("DELETE FROM app_downloads WHERE created_at < NOW() - INTERVAL '400 days'"); } catch (e) { console.error("purge:", e.message); }
 }
 (async () => {
     try {
