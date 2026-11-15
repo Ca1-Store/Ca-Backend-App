@@ -2607,6 +2607,12 @@ app.get("/api/v4/me", v4ReadLimiter, appAuth, (req, res) => {
     const u = req.user; res.json({ success: true, discordId: u.discordId, plans: u.plans, isOwner: u.isOwner, isAdmin: u.isAdmin, perms: u.perms, role: u.isOwner ? "owner" : u.isAdmin ? "admin" : "user", name: u.name });
 });
 
+/* CA Studio: مفتوح فقط لمن يملك هذا الرول في السيرفر (التحقق هنا من الخادم، لا من البرنامج) */
+const STUDIO_ROLE_ID = String(process.env.STUDIO_ROLE_ID || "1571600844195893312");
+app.get("/api/v4/studio/access", v4ReadLimiter, appAuth, (req, res) => {
+    res.json({ success: true, allowed: Array.isArray(req.user.roles) && req.user.roles.includes(STUDIO_ROLE_ID) });
+});
+
 const canUse = (u, plans, roles) => u.isAdmin || ((!plans || !plans.length) && (!roles || !roles.length)) || (plans || []).some(p => u.plans.includes(p)) || (roles || []).some(r => u.roles.includes(r));
 function modView(m, u) {
     const unlocked = canUse(u, m.plans, m.required_roles);
